@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!-- ====================================================================================
+     SETTINGS: the only line to edit.
+     Paste the web app URL from Apps Script between the quotes (it ends in /exec).
+     ==================================================================================== -->
+<script>
+var API_URL = 'https://script.google.com/macros/s/AKfycbyjZygkli1Pl7wy_d8IdvMqzK9qVVL6ZTBwXaFTL5bvtWmsYjy7OE2ZPvpjAjP7SMcN/exec';
+var REFRESH_MS = 20000;   /* how often an open phone re-reads the remarks, in milliseconds */
+</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Showroom scan</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --page: #EEF1F3;
+  --surface: #FFFFFF;
+  --ink: #16222E;
+  --muted: #5B6875;
+  --line: #D5DBE0;
+  --primary: #1D4F7A;
+  --primary-ink: #FFFFFF;
+  --ok: #1B7A4B;
+  --ok-bg: #E3F3EA;
+  --warn: #8A5200;
+  --warn-bg: #FBEFD6;
+  --laser: #E5382B;
+  --font: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0F161D; --surface: #18222C; --ink: #E8EDF1; --muted: #9AA7B3; --line: #2B3946;
+    --primary: #6FB0E6; --primary-ink: #0B1620; --ok: #5CCB8F; --ok-bg: #143325;
+    --warn: #F0B95A; --warn-bg: #3A2C10; --laser: #FF5A4D;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0F161D; --surface: #18222C; --ink: #E8EDF1; --muted: #9AA7B3; --line: #2B3946;
+  --primary: #6FB0E6; --primary-ink: #0B1620; --ok: #5CCB8F; --ok-bg: #143325;
+  --warn: #F0B95A; --warn-bg: #3A2C10; --laser: #FF5A4D;
+}
+*, *::before, *::after { box-sizing: inherit; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); height: 100%; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; min-height: 100%;
+  background: var(--page); color: var(--ink);
+  font-family: var(--font); font-size: 16px; line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+body::before {
+  content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px);
+  z-index: 10; background: var(--surface);
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+/* ---------- top bar ---------- */
+.top {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 9;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: 12px 16px 10px;
+}
+.top-in, .list, .dock-in { max-width: 720px; margin: 0 auto; }
+.top-row { display: flex; align-items: center; gap: 10px; }
+.quote-sel {
+  flex: 1; min-width: 0; appearance: none; -webkit-appearance: none;
+  background: transparent; border: 0; padding: 4px 22px 4px 0;
+  font-size: 22px; font-weight: 600; letter-spacing: 0.01em;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 9px) 55%, calc(100% - 3px) 55%;
+  background-size: 6px 6px, 6px 6px; background-repeat: no-repeat;
+}
+.link-btn {
+  background: none; border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 12px; font-size: 14px; font-weight: 500; white-space: nowrap;
+}
+.sub { display: flex; justify-content: space-between; gap: 12px; margin-top: 2px; font-size: 14px; color: var(--muted); }
+.sub b { color: var(--ink); font-weight: 600; }
+.tools { display: flex; gap: 8px; margin-top: 10px; }
+.search {
+  flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--page); font-size: 16px;
+}
+.seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: none; }
+.seg button { background: none; border: 0; padding: 0 12px; font-size: 14px; font-weight: 500; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+
+/* ---------- list ---------- */
+.list { padding: 0 0 112px; }
+.row {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: start;
+  width: 100%; text-align: left; background: var(--surface);
+  border: 0; border-bottom: 1px solid var(--line); border-left: 4px solid transparent;
+  padding: 12px 16px 12px 12px;
+}
+.row.is-marked { border-left-color: var(--ok); }
+.row-no { font-size: 18px; font-weight: 600; letter-spacing: 0.01em; }
+.row-name { grid-column: 1; font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
+.row-side { grid-row: 1; grid-column: 2; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; padding-top: 4px; }
+.row-side svg { flex: none; }
+.row-remark {
+  grid-column: 1 / -1; margin-top: 6px; padding: 6px 10px; border-radius: 6px;
+  background: var(--ok-bg); color: var(--ok); font-size: 15px; font-weight: 500; overflow-wrap: anywhere;
+}
+.section-h { padding: 22px 16px 8px; font-size: 14px; font-weight: 600; color: var(--warn); }
+.row.is-extra { border-left-color: var(--warn); }
+.row.is-extra .row-remark { background: var(--warn-bg); color: var(--warn); }
+.state { padding: 40px 20px; text-align: center; color: var(--muted); }
+.state b { display: block; color: var(--ink); font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+.notice { margin: 12px 16px 0; padding: 10px 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 14px; }
+
+/* ---------- dock ---------- */
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 8;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, var(--page) 70%, transparent);
+}
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 48px; padding: 10px 18px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface); font-weight: 500; font-size: 16px;
+}
+.btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); font-weight: 600; }
+.btn.danger { color: var(--laser); }
+.btn[disabled] { opacity: 0.55; cursor: default; }
+.btn.big { width: 100%; min-height: 60px; font-size: 19px; border-radius: 14px; box-shadow: 0 6px 18px rgba(22, 34, 46, 0.22); }
+
+/* ---------- scan overlay (always dark: it is a viewfinder) ---------- */
+.scan { position: fixed; inset: 0; z-index: 20; background: #05080B; color: #F2F5F7; display: flex; flex-direction: column; }
+.scan video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.scan-top, .scan-bottom { position: relative; z-index: 2; padding: 12px 16px; }
+.scan-top { padding-top: calc(12px + env(safe-area-inset-top, 0px)); display: flex; justify-content: space-between; align-items: center; background: linear-gradient(to bottom, rgba(5, 8, 11, 0.8), transparent); }
+.scan-title { font-weight: 600; }
+.scan-close { background: rgba(255, 255, 255, 0.14); border: 0; color: #fff; border-radius: 999px; min-height: 44px; padding: 0 18px; font-weight: 500; }
+.finder { position: relative; z-index: 1; flex: 1; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.finder-box { position: relative; width: min(86vw, 520px); height: min(32vh, 240px); border-radius: 14px; box-shadow: 0 0 0 100vmax rgba(5, 8, 11, 0.45); }
+.finder-box::before, .finder-box::after { content: ""; position: absolute; width: 34px; height: 34px; border: 3px solid #fff; }
+.finder-box::before { left: -2px; top: -2px; border-right: 0; border-bottom: 0; border-radius: 14px 0 0 0; }
+.finder-box::after { right: -2px; bottom: -2px; border-left: 0; border-top: 0; border-radius: 0 0 14px 0; }
+.laser { position: absolute; left: 6%; right: 6%; top: 50%; height: 2px; background: var(--laser); box-shadow: 0 0 10px 1px var(--laser); animation: sweep 2.4s ease-in-out infinite alternate; }
+@keyframes sweep { from { transform: translateY(-36px); } to { transform: translateY(36px); } }
+@media (prefers-reduced-motion: reduce) { .laser { animation: none; } }
+.scan.is-hit .finder-box { box-shadow: 0 0 0 100vmax rgba(27, 122, 75, 0.5); }
+.scan-bottom { padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: linear-gradient(to top, rgba(5, 8, 11, 0.92) 60%, transparent); }
+.scan-msg { min-height: 2.8em; margin: 0 0 12px; text-align: center; font-size: 15px; }
+.scan-actions { display: flex; gap: 10px; }
+.scan-actions .btn { flex: 1; background: rgba(255, 255, 255, 0.14); border-color: transparent; color: #fff; font-size: 15px; padding: 10px; }
+.type-row { display: flex; gap: 8px; margin-top: 10px; }
+.type-row input { flex: 1; min-width: 0; padding: 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.3); background: rgba(255, 255, 255, 0.1); color: #fff; font-size: 18px; letter-spacing: 0.04em; }
+.type-row .btn { background: #fff; color: #05080B; border-color: #fff; font-weight: 600; }
+
+/* ---------- sheet ---------- */
+.veil { position: fixed; inset: 0; z-index: 30; background: rgba(5, 8, 11, 0.5); display: flex; align-items: flex-end; justify-content: center; }
+.sheet {
+  width: 100%; max-width: 720px; max-height: 92%; overflow-y: auto;
+  background: var(--surface); color: var(--ink); border-radius: 18px 18px 0 0;
+  padding: 20px 18px calc(18px + env(safe-area-inset-bottom, 0px));
+  animation: rise 0.18s ease-out;
+}
+@keyframes rise { from { transform: translateY(28px); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
+.sheet-no { font-size: 28px; font-weight: 600; letter-spacing: 0.01em; line-height: 1.15; overflow-wrap: anywhere; }
+.sheet-name { margin-top: 4px; color: var(--muted); overflow-wrap: anywhere; }
+.sheet-meta { margin-top: 8px; font-size: 14px; color: var(--muted); }
+.sheet-meta.warn { color: var(--warn); }
+.field { display: block; margin-top: 16px; }
+.field span { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; }
+.field input, .field textarea { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--page); font-size: 18px; }
+.field textarea { resize: vertical; min-height: 76px; font-size: 16px; }
+.form-msg { min-height: 1.4em; margin: 10px 0 0; font-size: 14px; color: var(--warn); }
+.sheet-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.sheet-actions .btn { flex: 1 1 140px; }
+.pick { display: block; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line); padding: 14px 0; }
+.pick b { display: block; font-size: 18px; font-weight: 600; }
+.pick span { color: var(--muted); font-size: 14px; }
+
+.foot { padding: 22px 16px 0; font-size: 14px; color: var(--muted); }
+.foot b { color: var(--ink); font-weight: 600; }
+.text-btn { background: none; border: 0; padding: 0; color: var(--primary); font-weight: 500; text-decoration: underline; }
+.state .btn { margin: 0 auto; }
+.gate { position: fixed; inset: 0; z-index: 50; background: var(--page); display: flex; align-items: center; justify-content: center; padding: calc(20px + env(safe-area-inset-top, 0px)) 20px calc(20px + env(safe-area-inset-bottom, 0px)); overflow-y: auto; }
+.gate-card { width: 100%; max-width: 400px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 24px 20px; }
+.gate-card h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; }
+.gate-card p { margin: 0; color: var(--muted); }
+.gate-card .btn { width: 100%; margin-top: 8px; }
+.gate-card .form-msg { color: var(--warn); margin-top: 12px; }
+
+.toast {
+  position: fixed; left: 50%; top: calc(72px + env(safe-area-inset-top, 0px)); transform: translateX(-50%);
+  z-index: 40; background: var(--ink); color: var(--surface); padding: 10px 16px; border-radius: 999px;
+  font-size: 15px; font-weight: 500; max-width: 90vw; text-align: center;
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-in">
+    <div class="top-row">
+      <select id="quoteSel" class="quote-sel" aria-label="Quotation"></select>
+      <button id="refreshBtn" class="link-btn" data-act="refresh" hidden>Refresh</button>
+    </div>
+    <div class="sub"><span id="customer"></span><span id="progress"></span></div>
+    <div class="tools" id="tools" hidden>
+      <input id="search" class="search" type="search" placeholder="Item number or name" autocomplete="off" aria-label="Find by item number or name">
+      <div class="seg" role="group" aria-label="Show">
+        <button data-act="filter" data-v="all" aria-pressed="true">All</button>
+        <button data-act="filter" data-v="marked" aria-pressed="false">Marked</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div id="notice" class="notice" hidden></div>
+<main id="list" class="list" aria-live="polite"></main>
+
+<div class="dock"><div class="dock-in">
+  <button class="btn primary big" data-act="scan">
+    <svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true"><g fill="currentColor"><rect x="0" width="2" height="20"/><rect x="4" width="1" height="20"/><rect x="7" width="3" height="20"/><rect x="12" width="1" height="20"/><rect x="15" width="2" height="20"/><rect x="19" width="1" height="20"/><rect x="22" width="1" height="20"/><rect x="24" width="2" height="20"/></g></svg>
+    Scan barcode
+  </button>
+</div></div>
+
+<div id="scan" class="scan" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <div class="scan-top">
+    <span class="scan-title">Scan barcode</span>
+    <button class="scan-close" data-act="scan-close">Close</button>
+  </div>
+  <div class="finder"><div class="finder-box"><div class="laser"></div></div></div>
+  <div class="scan-bottom">
+    <p id="scanMsg" class="scan-msg" role="status"></p>
+    <div class="scan-actions">
+      <label class="btn" for="photoIn">Take a photo instead</label>
+      <button class="btn" data-act="type-toggle">Type the number</button>
+    </div>
+    <input id="photoIn" type="file" accept="image/*" capture="environment" hidden>
+    <div class="type-row" id="typeRow" hidden>
+      <input id="typeIn" inputmode="numeric" autocomplete="off" placeholder="EAN digits" aria-label="EAN digits">
+      <button class="btn" data-act="type-go">Look up</button>
+    </div>
+  </div>
+</div>
+
+<div id="gate" class="gate" hidden>
+  <form id="gateForm" class="gate-card" autocomplete="off">
+    <h1>Showroom scan</h1>
+    <p>Enter the team access code to open the quotations.</p>
+    <label class="field"><span>Team access code</span><input id="gCode" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label class="field"><span>Your name</span><input id="gName" type="text" autocomplete="name" maxlength="60"></label>
+    <p class="form-msg" id="gMsg" role="alert"></p>
+    <button class="btn primary" type="submit" id="gGo">Open</button>
+  </form>
+</div>
+
+<div id="veil" class="veil" hidden><div id="sheet" class="sheet" role="dialog" aria-modal="true"></div></div>
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.12.1/dist/quagga.min.js"></script>
+<script>
+/* ===== Barcode decoding: native detector, then ZXing, then Quagga. Shared by live and photo paths. ===== */
+var Decoder = (function () {
+  var FORMATS_NATIVE = ['ean_13', 'ean_8', 'upc_a', 'upc_e'];
+  var nativeDetector = null, nativeChecked = false;
+
+  function digitsOnly(s) { return String(s == null ? '' : s).replace(/\D/g, ''); }
+
+  /* GTIN check digit (8, 12, 13 or 14 digits). */
+  function checkDigitOk(d) {
+    if (!/^\d+$/.test(d) || [8, 12, 13, 14].indexOf(d.length) < 0) return false;
+    var sum = 0;
+    for (var i = d.length - 2, w = 3; i >= 0; i--, w = 4 - w) sum += (d.charCodeAt(i) - 48) * w;
+    return (10 - (sum % 10)) % 10 === d.charCodeAt(d.length - 1) - 48;
+  }
+
+  /* One comparable key for any EAN / UPC / GTIN: digits, left-padded to 14. */
+  function gtinKey(s) {
+    var d = digitsOnly(s);
+    if (d.length < 8 || d.length > 14) return '';
+    return ('00000000000000' + d).slice(-14);
+  }
+
+  function getNative() {
+    if (nativeChecked) return Promise.resolve(nativeDetector);
+    nativeChecked = true;
+    if (!('BarcodeDetector' in window)) return Promise.resolve(null);
+    return window.BarcodeDetector.getSupportedFormats().then(function (f) {
+      var use = FORMATS_NATIVE.filter(function (x) { return f.indexOf(x) >= 0; });
+      if (use.length) nativeDetector = new window.BarcodeDetector({ formats: use });
+      return nativeDetector;
+    }).catch(function () { return null; });
+  }
+
+  var zxReader = null;
+  function zxingDecode(canvas) {
+    if (!window.ZXing) return null;
+    var Z = window.ZXing;
+    if (!zxReader) {
+      var hints = new Map();
+      hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.UPC_E]);
+      hints.set(Z.DecodeHintType.TRY_HARDER, true);
+      zxReader = new Z.MultiFormatReader();
+      zxReader.setHints(hints);
+    }
+    var src = new Z.HTMLCanvasElementLuminanceSource(canvas);
+    var bins = [Z.HybridBinarizer, Z.GlobalHistogramBinarizer];
+    for (var i = 0; i < bins.length; i++) {
+      try {
+        var res = zxReader.decodeWithState(new Z.BinaryBitmap(new bins[i](src)));
+        if (res && res.getText()) return res.getText();
+      } catch (e) { /* not found is the normal miss */ }
+    }
+    return null;
+  }
+
+  function quaggaDecode(canvas, size) {
+    return new Promise(function (resolve) {
+      if (!window.Quagga) return resolve(null);
+      var done = false;
+      var t = setTimeout(function () { if (!done) { done = true; resolve(null); } }, 6000);
+      try {
+        window.Quagga.decodeSingle({
+          src: canvas.toDataURL('image/jpeg', 0.9),
+          numOfWorkers: 0,
+          locate: true,
+          inputStream: { size: size },
+          locator: { patchSize: 'medium', halfSample: true },
+          decoder: { readers: ['ean_reader', 'ean_8_reader', 'upc_reader', 'upc_e_reader'] }
+        }, function (r) {
+          if (done) return; done = true; clearTimeout(t);
+          resolve(r && r.codeResult && r.codeResult.code ? r.codeResult.code : null);
+        });
+      } catch (e) { if (!done) { done = true; clearTimeout(t); resolve(null); } }
+    });
+  }
+
+  /* Draw a source scaled so its longest side is maxDim, optionally rotated 90 degrees and/or cropped. */
+  function toCanvas(source, sw, sh, maxDim, rot90, crop) {
+    crop = crop || { x: 0, y: 0, w: sw, h: sh };
+    var s = Math.min(1, maxDim / Math.max(crop.w, crop.h));
+    var w = Math.max(1, Math.round(crop.w * s)), h = Math.max(1, Math.round(crop.h * s));
+    var c = document.createElement('canvas');
+    c.width = rot90 ? h : w; c.height = rot90 ? w : h;
+    var g = c.getContext('2d', { willReadFrequently: true });
+    if (rot90) { g.translate(h, 0); g.rotate(Math.PI / 2); }
+    g.drawImage(source, crop.x, crop.y, crop.w, crop.h, 0, 0, w, h);
+    return c;
+  }
+
+  function accept(text) {
+    var d = digitsOnly(text);
+    return checkDigitOk(d) ? d : null;
+  }
+
+  /* Thorough decode for a still photo.
+     A code that isKnown (it belongs to the open quotation) is accepted at once; any other code must be
+     read the same way twice to count as sure. Resolves {code, engine, sure} or null. */
+  function decodeStill(source, sw, sh, isKnown) {
+    isKnown = isKnown || function () { return false; };
+    var seen = {}, best = null;
+    function weigh(code, engine) {
+      if (!code) return null;
+      if (isKnown(code)) return { code: code, engine: engine, sure: true };
+      seen[code] = (seen[code] || 0) + 1;
+      if (seen[code] >= 2) return { code: code, engine: engine, sure: true };
+      if (!best) best = { code: code, engine: engine, sure: false };
+      return null;
+    }
+    return getNative().then(function (nd) {
+      var first = nd ? nd.detect(source).then(function (r) {
+        for (var i = 0; i < r.length; i++) { var a = accept(r[i].rawValue); if (a) return { code: a, engine: 'native', sure: true }; }
+        return null;
+      }).catch(function () { return null; }) : Promise.resolve(null);
+      return first.then(function (hit) {
+        if (hit) return hit;
+        var dims = [1600, 1000, 2400];
+        for (var i = 0; i < dims.length; i++) {
+          for (var r = 0; r < 2; r++) {
+            var z = weigh(accept(zxingDecode(toCanvas(source, sw, sh, dims[i], r === 1))), 'zxing');
+            if (z) return z;
+          }
+        }
+        var sizes = [1280, 800, 1920], k = 0;
+        var qc = toCanvas(source, sw, sh, 2400, false);
+        function next() {
+          if (k >= sizes.length) return best;
+          return quaggaDecode(qc, sizes[k++]).then(function (t) {
+            return weigh(accept(t), 'quagga') || next();
+          });
+        }
+        return next();
+      });
+    });
+  }
+
+  /* Fast decode for one live video frame (centre band only). Resolves {code, engine} or null. */
+  function decodeFrame(video) {
+    var vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return Promise.resolve(null);
+    var crop = { x: 0, y: Math.round(vh * 0.25), w: vw, h: Math.round(vh * 0.5) };
+    return getNative().then(function (nd) {
+      var c = toCanvas(video, vw, vh, 1280, false, crop);
+      if (nd) {
+        return nd.detect(c).then(function (r) {
+          for (var i = 0; i < r.length; i++) { var a = accept(r[i].rawValue); if (a) return { code: a, engine: 'native' }; }
+          return null;
+        }).catch(function () { return null; });
+      }
+      var a = accept(zxingDecode(c));
+      return a ? { code: a, engine: 'zxing' } : null;
+    });
+  }
+
+  return { digitsOnly: digitsOnly, checkDigitOk: checkDigitOk, gtinKey: gtinKey, decodeStill: decodeStill, decodeFrame: decodeFrame };
+})();
+
+/* ===== App ===== */
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var BARS = '<svg width="18" height="12" viewBox="0 0 18 12" aria-hidden="true"><g fill="currentColor"><rect x="0" width="2" height="12"/><rect x="3" width="1" height="12"/><rect x="5" width="2" height="12"/><rect x="9" width="1" height="12"/><rect x="11" width="3" height="12"/><rect x="15" width="1" height="12"/><rect x="17" width="1" height="12"/></g></svg>';
+  var CONNECTED = /^https?:\/\/\S+$/.test(String(API_URL || '').trim());
+
+  var S = {
+    code: '', name: '',
+    status: 'gate',               // unconfigured | gate | loading | ready | error
+    problem: '',
+    quotes: [], qid: null, quote: null, index: {},
+    marks: {}, extras: {},
+    filter: 'all', query: '',
+    sheet: null, saving: false,
+    seq: 0, syncedAt: 0, offline: false,
+    scan: { open: false, stream: null, live: false, paused: false, timer: null, last: null, cool: null, coolUntil: 0, starting: false, why: '' }
+  };
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function remarkText(m) {
+    var q = (m.qty || '').trim(), n = (m.note || '').trim();
+    if (q && n) return 'Qty ' + q + ' – ' + n;
+    return q ? 'Qty ' + q : n;
+  }
+  var toastTimer = null;
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.hidden = true; }, 2200);
+  }
+  function remember(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* storage can be unavailable */ } }
+  function recall(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+  function forget(k) { try { localStorage.removeItem(k); } catch (e) { /* nothing to remove */ } }
+  function clock(ms) { return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+
+  /* ---------- storage (Google Sheet behind the web app URL) ---------- */
+  function api(action, extra) {
+    var body = { code: S.code, action: action };
+    Object.keys(extra || {}).forEach(function (k) { body[k] = extra[k]; });
+    var ctl = ('AbortController' in window) ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 25000);
+    /* text/plain keeps this a "simple" request, which is what the Google web app accepts from another site */
+    return fetch(String(API_URL).trim(), {
+      method: 'POST', redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body), signal: ctl ? ctl.signal : undefined
+    }).then(function (r) {
+      if (!r.ok) throw { error: 'http', detail: String(r.status) };
+      return r.json();
+    }).then(function (j) {
+      clearTimeout(timer);
+      if (!j || !j.ok) throw (j && j.error ? j : { error: 'bad_response' });
+      return j;
+    }, function (e) {
+      clearTimeout(timer);
+      throw (e && e.error) ? e : { error: 'network' };
+    });
+  }
+  function problemText(e) {
+    var c = e && e.error;
+    if (c === 'bad_code') return 'That access code isn’t right. Ask for the current one.';
+    if (c === 'not_set_up') return 'The storage has no access code yet. In the Sheet, use Scan tool > 2. Set the team access code.';
+    if (c === 'busy') return 'Someone else is saving at this moment. Save again.';
+    if (c === 'not_found') return 'That item or quotation is no longer in the Sheet. Refresh the list.';
+    if (c === 'empty_remark') return 'Add a quantity or a note.';
+    if (c === 'server_error') return 'The Sheet reported a problem: ' + (e.detail || 'unknown') + '';
+    if (c === 'network') return 'No connection to the storage. Check the signal and try again.';
+    return 'The storage gave an answer the page couldn’t read (' + (c || 'unknown') + (e && e.detail ? ' ' + e.detail : '') + ').';
+  }
+
+  /* ---------- data ---------- */
+  function buildIndex() {
+    S.index = {};
+    if (!S.quote) return;
+    S.quote.items.forEach(function (it) {
+      var k = Decoder.gtinKey(it.ean);
+      if (k) (S.index[k] = S.index[k] || []).push(it);
+    });
+  }
+  function isKnownCode(code) { return !!S.index[Decoder.gtinKey(code)]; }
+  function itemByRow(row) {
+    if (!S.quote) return null;
+    for (var i = 0; i < S.quote.items.length; i++) if (S.quote.items[i].row === row) return S.quote.items[i];
+    return null;
+  }
+  function applyOpen(j) {
+    S.quote = { id: j.quotation.id, number: j.quotation.id, customer: j.quotation.customer || '', items: j.quotation.items || [] };
+    S.qid = S.quote.id;
+    S.marks = j.marks || {}; S.extras = j.extras || {};
+    S.syncedAt = Date.now(); S.offline = false; S.status = 'ready'; S.problem = '';
+    buildIndex();
+  }
+  function fail(e) {
+    if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+    if (S.quote) { S.offline = true; render(); return; }      /* keep showing what was loaded */
+    S.status = 'error'; S.problem = problemText(e); render();
+  }
+
+  /* first load, quotation switch and the Refresh button */
+  function loadAll(wantQid) {
+    var seq = ++S.seq;
+    if (!S.quote) { S.status = 'loading'; render(); }
+    return api('list').then(function (j) {
+      if (seq !== S.seq) return;
+      S.quotes = j.quotations || [];
+      var pick = null, want = wantQid || S.qid || recall('scan.qid');
+      S.quotes.forEach(function (q) { if (q.id === want) pick = q.id; });
+      if (!pick && S.quotes.length) pick = S.quotes[0].id;
+      if (!pick) { S.quote = null; S.qid = null; S.marks = {}; S.extras = {}; buildIndex(); S.status = 'ready'; S.offline = false; render(); return; }
+      return api('open', { quotation: pick }).then(function (o) {
+        if (seq !== S.seq) return;
+        applyOpen(o); remember('scan.qid', pick); render();
+      });
+    }).catch(function (e) { if (seq === S.seq) fail(e); });
+  }
+  /* quiet background refresh of the open quotation's remarks */
+  function refreshQuiet() {
+    if (S.status !== 'ready' || !S.quote || S.saving || document.hidden) return;
+    var seq = S.seq;
+    api('open', { quotation: S.qid }).then(function (o) {
+      if (seq !== S.seq || S.saving) return;            /* something newer happened meanwhile */
+      applyOpen(o); render();
+    }).catch(function (e) { if (seq === S.seq) fail(e); });
+  }
+
+  /* ---------- access code ---------- */
+  function showGate(msg) {
+    S.status = 'gate'; S.code = ''; forget('scan.code');
+    S.quote = null; S.quotes = []; S.marks = {}; S.extras = {}; buildIndex();
+    if (S.scan.open) closeScan();
+    S.sheet = null; $('veil').hidden = true;
+    $('gName').value = S.name || recall('scan.name');
+    $('gCode').value = '';
+    $('gMsg').textContent = msg || '';
+    $('gate').hidden = false;
+    render();
+    try { ($('gName').value ? $('gCode') : $('gName')).focus(); } catch (e) { /* focus is a nicety */ }
+  }
+  function submitGate() {
+    var code = $('gCode').value.trim(), name = $('gName').value.trim();
+    if (!code) { $('gMsg').textContent = 'Type the team access code.'; return; }
+    if (!name) { $('gMsg').textContent = 'Type your name, so colleagues see who saved a remark.'; return; }
+    $('gGo').disabled = true; $('gMsg').textContent = 'Checking…';
+    S.code = code; S.name = name;
+    api('list').then(function () {
+      remember('scan.code', code); remember('scan.name', name);
+      $('gGo').disabled = false; $('gate').hidden = true; $('gMsg').textContent = '';
+      S.status = 'loading'; render();
+      loadAll();
+    }).catch(function (e) {
+      S.code = ''; $('gGo').disabled = false; $('gMsg').textContent = problemText(e);
+    });
+  }
+
+  /* ---------- rendering ---------- */
+  function matches(it) {
+    if (S.filter === 'marked' && !S.marks['r' + it.row]) return false;
+    var q = S.query.trim().toLowerCase();
+    if (!q) return true;
+    if (String(it.item).toLowerCase().indexOf(q) >= 0) return true;
+    if (String(it.name).toLowerCase().indexOf(q) >= 0) return true;
+    var d = q.replace(/\D/g, '');
+    return d.length >= 4 && d.length === q.replace(/\s/g, '').length && String(it.ean).indexOf(d) >= 0;
+  }
+
+  function rowHtml(it) {
+    var m = S.marks['r' + it.row];
+    var side = it.ean ? BARS + '<span>' + esc(it.ean) + '</span>' : '<span>No barcode</span>';
+    return '<button class="row' + (m ? ' is-marked' : '') + '" data-act="open-item" data-row="' + it.row + '">' +
+      '<span class="row-no">' + esc(it.item) + '</span>' +
+      '<span class="row-side">' + side + '</span>' +
+      '<span class="row-name">' + esc(it.name) + '</span>' +
+      (m ? '<span class="row-remark">' + esc(remarkText(m)) + '</span>' : '') +
+      '</button>';
+  }
+
+  function render() {
+    var sel = $('quoteSel'), q = S.quote;
+    sel.innerHTML = S.quotes.length
+      ? S.quotes.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === S.qid ? ' selected' : '') + '>' + esc(x.id) + '</option>'; }).join('')
+      : '<option>Showroom scan</option>';
+    sel.disabled = S.quotes.length < 2;
+    $('customer').textContent = q ? q.customer : '';
+    var markedCount = q ? q.items.filter(function (it) { return S.marks['r' + it.row]; }).length : 0;
+    $('progress').innerHTML = q ? '<b>' + markedCount + '</b> of ' + q.items.length + ' marked' : '';
+    $('tools').hidden = !q;
+    $('refreshBtn').hidden = !(S.status === 'ready' || S.status === 'error') || !CONNECTED;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-act="filter"]'), function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-v') === S.filter));
+    });
+    var n = $('notice');
+    n.textContent = (q && S.offline) ? 'No connection to the storage. Showing the list as it was at ' + clock(S.syncedAt) + '; remarks can’t be saved until the signal is back.' : '';
+    n.hidden = !n.textContent;
+
+    var list = $('list');
+    if (!q) {
+      var msg = {
+        unconfigured: '<b>This copy isn’t connected yet</b>Paste the web app URL into the API_URL line at the top of the file and upload it again. The scanner can still be tested with the button below.',
+        gate: '',
+        loading: '<b>Loading quotations…</b>',
+        error: '<b>The quotations can’t be loaded</b>' + esc(S.problem) + '<br><br><button class="btn" data-act="refresh">Try again</button>',
+        ready: '<b>No quotation loaded yet</b>Once a quotation is added to the Sheet, its items appear here.'
+      }[S.status];
+      list.innerHTML = msg ? '<div class="state">' + msg + '</div>' : '';
+      return;
+    }
+    var rows = q.items.filter(matches);
+    var html = rows.map(rowHtml).join('');
+    if (!rows.length) {
+      html = '<div class="state">' + (S.query.trim()
+        ? '<b>No item matches “' + esc(S.query.trim()) + '”</b>Try part of the item number or name.'
+        : '<b>Nothing marked yet</b>Scan a barcode or tap an item to add a remark.') + '</div>';
+    }
+    var extraKeys = Object.keys(S.extras).sort();
+    if (extraKeys.length && !S.query.trim()) {
+      html += '<div class="section-h">Not in this quotation</div>' + extraKeys.map(function (k) {
+        var x = S.extras[k];
+        return '<button class="row is-extra" data-act="open-extra" data-code="' + esc(x.code) + '">' +
+          '<span class="row-no">' + esc(x.code) + '</span><span class="row-side">' + BARS + '</span>' +
+          '<span class="row-remark">' + esc(remarkText(x)) + '</span></button>';
+      }).join('');
+    }
+    html += '<div class="foot">Saving as <b>' + esc(S.name) + '</b>. <button class="text-btn" data-act="signout">Change name or code</button></div>';
+    list.innerHTML = html;
+  }
+
+  /* ---------- sheets ---------- */
+  var VIA = { camera: 'Read with the live camera', photo: 'Read from a photo', typed: 'Typed in' };
+
+  function formHtml(m, saveLabel, removeLabel) {
+    return '<label class="field"><span>Quantity</span><input id="fQty" inputmode="numeric" autocomplete="off" maxlength="40" value="' + esc(m ? m.qty : '') + '"></label>' +
+      '<label class="field"><span>Note</span><textarea id="fNote" rows="2" maxlength="500">' + esc(m ? m.note : '') + '</textarea></label>' +
+      '<p class="form-msg" id="fMsg" role="alert"></p>' +
+      '<div class="sheet-actions">' +
+      '<button class="btn primary" data-act="save">' + saveLabel + '</button>' +
+      '<button class="btn" data-act="sheet-close">' + (S.scan.open ? 'Scan again' : 'Cancel') + '</button>' +
+      (m ? '<button class="btn danger" data-act="remove">' + removeLabel + '</button>' : '') +
+      '</div>';
+  }
+
+  function openSheet(sh) {
+    S.sheet = sh;
+    var el = $('sheet'), html = '';
+    if (sh.type === 'item') {
+      var it = itemByRow(sh.row), m = S.marks['r' + sh.row];
+      var meta = it.ean ? 'EAN ' + esc(it.ean) + (it.src === 'master' ? ', filled in from the master list' : '') : 'No barcode on this item';
+      if (VIA[sh.via]) meta += '. ' + VIA[sh.via];
+      meta += '.';
+      if (m && m.by) meta += ' Last saved by ' + esc(m.by) + '.';
+      html = '<div class="sheet-no">' + esc(it.item) + '</div><div class="sheet-name">' + esc(it.name) + '</div>' +
+        '<div class="sheet-meta">' + meta + '</div>' + formHtml(m, 'Save remark', 'Remove remark');
+    } else if (sh.type === 'pick') {
+      html = '<div class="sheet-no">' + esc(sh.code) + '</div><div class="sheet-meta">' + sh.rows.length + ' items in this quotation share this barcode. Choose the one in hand.</div>' +
+        sh.rows.map(function (r) {
+          var it = itemByRow(r);
+          return '<button class="pick" data-act="pick" data-row="' + r + '"><b>' + esc(it.item) + '</b><span>' + esc(it.name) + '</span></button>';
+        }).join('') +
+        '<div class="sheet-actions"><button class="btn" data-act="sheet-close">' + (S.scan.open ? 'Scan again' : 'Cancel') + '</button></div>';
+    } else if (sh.type === 'extra') {
+      var x = S.extras['x' + Decoder.gtinKey(sh.code)];
+      html = '<div class="sheet-no">' + esc(sh.code) + '</div><div class="sheet-name">Not in this quotation</div>' +
+        '<div class="sheet-meta warn">' + (sh.sure === false
+          ? 'This read could not be confirmed. Scan again before noting it.'
+          : (VIA[sh.via] ? VIA[sh.via] + '. ' : '') + 'Save it as an extra item, or find the right item by name.') +
+        (x && x.by ? ' Last saved by ' + esc(x.by) + '.' : '') + '</div>' +
+        formHtml(x, 'Save extra item', 'Remove extra item') +
+        '<div class="sheet-actions"><button class="btn" data-act="find-instead">Find the item by name or number</button></div>';
+    } else if (sh.type === 'read') {
+      html = '<div class="sheet-no">' + esc(sh.code) + '</div><div class="sheet-name">Barcode read</div>' +
+        '<div class="sheet-meta">' + (VIA[sh.via] || '') + '. No quotation is open, so there is nothing to match it against.</div>' +
+        '<div class="sheet-actions"><button class="btn primary" data-act="sheet-close">' + (S.scan.open ? 'Scan again' : 'Close') + '</button></div>';
+    }
+    el.innerHTML = html;
+    $('veil').hidden = false;
+    el.scrollTop = 0;
+    var qty = $('fQty');
+    if (qty && sh.type === 'item' && !S.marks['r' + sh.row]) { try { qty.focus({ preventScroll: true }); } catch (e) { qty.focus(); } }
+  }
+
+  function closeSheet() {
+    var sh = S.sheet;
+    S.sheet = null; S.saving = false;
+    $('veil').hidden = true;
+    if (S.scan.open) {
+      if (sh && sh.code) { S.scan.cool = sh.code; S.scan.coolUntil = Date.now() + 2500; }
+      resumeLive();
+    }
+  }
+
+  function setSaving(on, label) {
+    S.saving = on;
+    Array.prototype.forEach.call($('sheet').querySelectorAll('button'), function (b) { b.disabled = on; });
+    var m = $('fMsg'); if (m && on) m.textContent = label || '';
+  }
+  function formMsg(t) { var m = $('fMsg'); if (m) m.textContent = t || ''; }
+
+  function sendRemark(action) {
+    var sh = S.sheet; if (!sh || S.saving) return;
+    if (!S.quote || !CONNECTED) { formMsg('Remarks can’t be saved from this copy of the page.'); return; }
+    var req = { quotation: S.qid, kind: sh.type === 'item' ? 'item' : 'extra', via: sh.via || 'list', by: S.name };
+    var label;
+    if (sh.type === 'item') { var it = itemByRow(sh.row); req.row = it.row; req.codeRead = sh.code || ''; label = it.item; }
+    else { req.codeRead = sh.code; label = sh.code; }
+    if (action === 'save') {
+      req.qty = $('fQty').value.trim(); req.note = $('fNote').value.trim();
+      if (!req.qty && !req.note) { formMsg('Add a quantity or a note.'); return; }
+    }
+    S.seq++;
+    setSaving(true, action === 'save' ? 'Saving…' : 'Removing…');
+    api(action, req).then(function (j) {
+      S.seq++;
+      S.marks = j.marks || {}; S.extras = j.extras || {}; S.syncedAt = Date.now(); S.offline = false;
+      toast(action === 'save' ? 'Saved ' + label : 'Removed');
+      closeSheet(); render();
+    }).catch(function (e) {
+      S.seq++;
+      if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+      setSaving(false); formMsg(e && e.error === 'network' ? 'Not saved: no connection to the storage. Check the signal and save again.' : problemText(e));
+    });
+  }
+
+  /* ---------- scanning ---------- */
+  function scanMsg(t) { $('scanMsg').textContent = t || ''; }
+  function idleMsg() {
+    return S.scan.live
+      ? 'Hold the barcode inside the frame, about a hand’s length away.'
+      : 'The live camera isn’t available here (' + (S.scan.why || 'not started') + '). Take a photo of the barcode or type the number instead.';
+  }
+  function openScan() {
+    S.scan.open = true; S.scan.last = null; S.scan.cool = null;
+    $('scan').hidden = false; $('typeRow').hidden = true;
+    startCamera();
+  }
+  function closeScan() {
+    S.scan.open = false;
+    stopCamera();
+    $('scan').hidden = true;
+  }
+  function stopCamera() {
+    S.scan.live = false; clearTimeout(S.scan.timer);
+    if (S.scan.stream) { S.scan.stream.getTracks().forEach(function (t) { t.stop(); }); S.scan.stream = null; }
+    $('video').srcObject = null;
+  }
+  function cameraFailed(why) {
+    S.scan.live = false; S.scan.starting = false; S.scan.why = why;
+    scanMsg(idleMsg());
+  }
+  function startCamera() {
+    if (S.scan.stream || S.scan.starting) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { cameraFailed('this browser gives pages no camera access'); return; }
+    S.scan.starting = true;
+    scanMsg('Starting the camera…');
+    var slow = setTimeout(function () { if (S.scan.starting) scanMsg('The camera hasn’t answered yet. If nothing happens, take a photo or type the number.'); }, 6000);
+    navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    }).then(function (stream) {
+      clearTimeout(slow); S.scan.starting = false;
+      if (!S.scan.open) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+      S.scan.stream = stream;
+      var v = $('video'); v.srcObject = stream;
+      var p = v.play(); if (p && p.catch) p.catch(function () { /* autoplay refusals surface as no frames */ });
+      S.scan.live = true; S.scan.paused = !!S.sheet;
+      scanMsg(idleMsg());
+      tick();
+    }).catch(function (e) {
+      clearTimeout(slow);
+      cameraFailed(e && e.name === 'NotAllowedError' ? 'permission was refused' : (e && e.name) || 'unknown reason');
+    });
+  }
+  function resumeLive() {
+    S.scan.paused = false; S.scan.last = null;
+    $('scan').classList.remove('is-hit');
+    scanMsg(idleMsg());
+    if (S.scan.live) { clearTimeout(S.scan.timer); tick(); }
+  }
+  function tick() {
+    if (!S.scan.live || S.scan.paused || !S.scan.open) return;
+    Decoder.decodeFrame($('video')).catch(function () { return null; }).then(function (r) {
+      if (!S.scan.live || S.scan.paused || !S.scan.open) return;
+      if (r && !(r.code === S.scan.cool && Date.now() < S.scan.coolUntil)) {
+        /* accept at once when the engine is the phone's own detector or the code belongs to this quotation;
+           otherwise wait for the same read twice in a row */
+        if (r.engine === 'native' || isKnownCode(r.code) || S.scan.last === r.code) { onCode(r.code, 'camera', true); return; }
+        S.scan.last = r.code;
+      }
+      S.scan.timer = setTimeout(tick, 90);
+    });
+  }
+
+  function onCode(code, via, sure) {
+    S.scan.paused = true;
+    $('scan').classList.add('is-hit');
+    if (navigator.vibrate) { try { navigator.vibrate(60); } catch (e) { /* not supported */ } }
+    if (!S.quote) { openSheet({ type: 'read', code: code, via: via }); return; }
+    var hits = S.index[Decoder.gtinKey(code)] || [];
+    if (hits.length === 1) openSheet({ type: 'item', row: hits[0].row, via: via, code: code });
+    else if (hits.length > 1) openSheet({ type: 'pick', rows: hits.map(function (h) { return h.row; }), via: via, code: code });
+    else openSheet({ type: 'extra', code: code, via: via, sure: sure });
+  }
+
+  function fileToSource(file) {
+    var viaBitmap = window.createImageBitmap
+      ? window.createImageBitmap(file).then(function (b) { return { el: b, w: b.width, h: b.height }; })
+      : Promise.reject(new Error('no createImageBitmap'));
+    return viaBitmap.catch(function () {
+      return new Promise(function (resolve, reject) {
+        var fr = new FileReader();
+        fr.onerror = function () { reject(new Error('read failed')); };
+        fr.onload = function () {
+          var im = new Image();
+          im.onload = function () { resolve({ el: im, w: im.naturalWidth, h: im.naturalHeight }); };
+          im.onerror = function () { reject(new Error('decode failed')); };
+          im.src = fr.result;
+        };
+        fr.readAsDataURL(file);
+      });
+    });
+  }
+
+  function onPhoto(file) {
+    S.scan.paused = true;
+    scanMsg('Reading the photo…');
+    fileToSource(file).then(function (src) {
+      return Decoder.decodeStill(src.el, src.w, src.h, isKnownCode);
+    }).then(function (r) {
+      if (r) { onCode(r.code, 'photo', r.sure); return; }
+      resumeLive();
+      scanMsg('No barcode found in that photo. Fill the frame with the barcode, keep it sharp, and try again.');
+    }).catch(function () {
+      resumeLive();
+      scanMsg('That photo couldn’t be opened. Take it again.');
+    });
+  }
+
+  function typedLookup() {
+    var d = Decoder.digitsOnly($('typeIn').value);
+    if (d.length < 8 || d.length > 14) { scanMsg('An EAN has 8, 12, 13 or 14 digits. This one has ' + d.length + '.'); return; }
+    if (!isKnownCode(d) && !Decoder.checkDigitOk(d)) { scanMsg('That number’s check digit doesn’t add up. Check it against the label.'); return; }
+    $('typeIn').value = '';
+    onCode(d, 'typed', true);
+  }
+
+  /* ---------- events ---------- */
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest ? ev.target.closest('[data-act]') : null;
+    if (!b) { if (ev.target === $('veil') && !S.saving) closeSheet(); return; }
+    var act = b.getAttribute('data-act');
+    if (act === 'scan') openScan();
+    else if (act === 'scan-close') closeScan();
+    else if (act === 'type-toggle') { var tr = $('typeRow'); tr.hidden = !tr.hidden; if (!tr.hidden) $('typeIn').focus(); }
+    else if (act === 'type-go') typedLookup();
+    else if (act === 'filter') { S.filter = b.getAttribute('data-v'); render(); }
+    else if (act === 'open-item') openSheet({ type: 'item', row: Number(b.getAttribute('data-row')), via: 'list' });
+    else if (act === 'open-extra') openSheet({ type: 'extra', code: b.getAttribute('data-code'), via: 'list' });
+    else if (act === 'pick') openSheet({ type: 'item', row: Number(b.getAttribute('data-row')), via: S.sheet.via, code: S.sheet.code });
+    else if (act === 'save') sendRemark('save');
+    else if (act === 'remove') sendRemark('remove');
+    else if (act === 'sheet-close') closeSheet();
+    else if (act === 'find-instead') { S.sheet = null; $('veil').hidden = true; closeScan(); S.filter = 'all'; render(); $('search').focus(); }
+    else if (act === 'refresh') { loadAll().then(function () { if (S.status === 'ready' && !S.offline) toast('List refreshed'); }); }
+    else if (act === 'signout') showGate('');
+  });
+  $('search').addEventListener('input', function () { S.query = this.value; render(); });
+  $('quoteSel').addEventListener('change', function () {
+    S.quote = null; S.marks = {}; S.extras = {}; buildIndex(); S.qid = this.value;
+    loadAll(this.value);
+  });
+  $('photoIn').addEventListener('change', function () {
+    var f = this.files && this.files[0]; this.value = '';
+    if (f) onPhoto(f);
+  });
+  $('typeIn').addEventListener('keydown', function (ev) { if (ev.key === 'Enter') typedLookup(); });
+  $('gateForm').addEventListener('submit', function (ev) { ev.preventDefault(); submitGate(); });
+  document.addEventListener('visibilitychange', function () {
+    if (S.scan.open) { if (document.hidden) stopCamera(); else startCamera(); }
+    if (!document.hidden) refreshQuiet();
+  });
+  setInterval(refreshQuiet, REFRESH_MS);
+
+  /* ---------- start ---------- */
+  if (!CONNECTED) { S.status = 'unconfigured'; render(); return; }
+  S.code = recall('scan.code'); S.name = recall('scan.name');
+  if (S.code && S.name) { S.status = 'loading'; render(); loadAll(); }
+  else showGate('');
+})();
+</script>
+</body>
+</html>
