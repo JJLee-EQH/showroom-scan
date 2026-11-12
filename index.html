@@ -6,7 +6,7 @@
      Paste the web app URL from Apps Script between the quotes (it ends in /exec).
      ==================================================================================== -->
 <script>
-var API_URL = 'https://script.google.com/macros/s/AKfycbyjZygkli1Pl7wy_d8IdvMqzK9qVVL6ZTBwXaFTL5bvtWmsYjy7OE2ZPvpjAjP7SMcN/exec';
+var API_URL = 'https://script.google.com/macros/s/AKfycbyyhF-AlK0HD7kEKOoiAtiYplkkN12p_eX3vIcQN5Z9KbQJ2Q6SgiEyGkdPoYWxviA_Uw/exec';
 var REFRESH_MS = 20000;   /* how often an open phone re-reads the remarks, in milliseconds */
 </script>
 <meta charset="utf-8">
@@ -186,6 +186,8 @@ button { cursor: pointer; }
 
 .foot { padding: 22px 16px 0; font-size: 14px; color: var(--muted); }
 .foot b { color: var(--ink); font-weight: 600; }
+.sheet.is-busy label.btn { pointer-events: none; opacity: 0.55; }
+.sheet-list { margin: 10px 0 0; padding-left: 18px; font-size: 14px; color: var(--warn); }
 .text-btn { background: none; border: 0; padding: 0; color: var(--primary); font-weight: 500; text-decoration: underline; }
 .state .btn { margin: 0 auto; }
 .gate { position: fixed; inset: 0; z-index: 50; background: var(--page); display: flex; align-items: center; justify-content: center; padding: calc(20px + env(safe-area-inset-top, 0px)) 20px calc(20px + env(safe-area-inset-bottom, 0px)); overflow-y: auto; }
@@ -251,6 +253,8 @@ button { cursor: pointer; }
     </div>
   </div>
 </div>
+
+<input id="quoteIn" type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
 
 <div id="gate" class="gate" hidden>
   <form id="gateForm" class="gate-card" autocomplete="off">
@@ -425,6 +429,127 @@ var Decoder = (function () {
   return { digitsOnly: digitsOnly, checkDigitOk: checkDigitOk, gtinKey: gtinKey, decodeStill: decodeStill, decodeFrame: decodeFrame };
 })();
 
+/* ===== Reading a quotation file (.xls / .xlsx) in the browser ===== */
+var QuoteFile = (function () {
+  /* the reader library is fetched only when someone adds a quotation */
+  var URLS = ['https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
+              'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'];
+  var loading = null;
+  function library() {
+    if (window.XLSX) return Promise.resolve(window.XLSX);
+    if (loading) return loading;
+    loading = new Promise(function (resolve, reject) {
+      var i = 0;
+      (function next() {
+        if (i >= URLS.length) { loading = null; reject(new Error('The file reader could not be downloaded. Check the connection and try again.')); return; }
+        var el = document.createElement('script'); el.src = URLS[i++]; el.async = true;
+        el.onload = function () { if (window.XLSX) resolve(window.XLSX); else next(); };
+        el.onerror = function () { el.remove(); next(); };
+        document.head.appendChild(el);
+      })();
+    });
+    return loading;
+  }
+
+  function norm(v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase(); }
+  function cellText(v) {
+    if (v == null) return '';
+    if (typeof v === 'number' && isFinite(v) && v === Math.floor(v)) return String(v);
+    return String(v).replace(/\s+/g, ' ').trim();
+  }
+  function cleanEan(v) {
+    var d = cellText(v).replace(/\D/g, '');
+    return [8, 12, 13, 14].indexOf(d.length) >= 0 ? d : '';
+  }
+  function colLetter(i) { var s = ''; i += 1; while (i) { var r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = (i - 1 - r) / 26; } return s; }
+
+  /* the row with the column titles: the one that has an "Item number" cell; exact titles first, then looser matches */
+  function findHeader(rows) {
+    var exact = { item: ['item number', 'item no.', 'item no', 'article number'], name: ['item name'],
+                  ean: ['ean-no.', 'ean-no', 'ean no.', 'ean no', 'ean', 'ean code', 'barcode'], remark: ['remark', 'remarks'] };
+    var loose = { name: /\bitem name\b|\bname\b/, ean: /\bean\b/, remark: /\bremarks?\b/ };
+    for (var r = 0; r < Math.min(rows.length, 80); r++) {
+      var cells = (rows[r] || []).map(norm);
+      if (!cells.some(function (c) { return exact.item.indexOf(c) >= 0; })) continue;
+      var cols = {}, used = [];
+      Object.keys(exact).forEach(function (key) {
+        for (var n = 0; n < exact[key].length && cols[key] === undefined; n++) {
+          var at = cells.indexOf(exact[key][n]);
+          if (at >= 0) cols[key] = at;
+        }
+        if (cols[key] === undefined && loose[key]) {
+          for (var i = 0; i < cells.length; i++) if (cells[i] && loose[key].test(cells[i]) && used.indexOf(i) < 0) { cols[key] = i; break; }
+        }
+        if (cols[key] !== undefined) used.push(cols[key]);
+      });
+      return { row: r, cols: cols };
+    }
+    return null;
+  }
+
+  var QUOTE_NO = /^[A-Z]{1,4}\d{6,}([-\/.][A-Za-z0-9]+)?$/;
+
+  function parse(XLSX, buffer, fileName) {
+    var wb;
+    try { wb = XLSX.read(new Uint8Array(buffer), { type: 'array' }); }
+    catch (e) { throw new Error('This file can’t be read as an Excel file. Choose the quotation as it was exported (.xls or .xlsx).'); }
+    for (var s = 0; s < wb.SheetNames.length; s++) {
+      var name = wb.SheetNames[s], ws = wb.Sheets[name];
+      if (!ws || !ws['!ref']) continue;
+      var box = XLSX.utils.decode_range(ws['!ref']); box.s.r = 0; box.s.c = 0;      /* count rows and columns from A1, as Excel does */
+      var rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: true, range: box });
+      var head = findHeader(rows);
+      if (!head) continue;
+      var missing = [];
+      if (head.cols.ean === undefined) missing.push('EAN-NO.');
+      if (head.cols.remark === undefined) missing.push('Remark');
+      if (missing.length) throw new Error('The sheet “' + name + '” has an “Item number” column but no ' + missing.join(' and no ') + ' column.');
+      var number = '', customer = '';
+      for (var r = head.row - 1; r >= 0 && !number; r--) {
+        var row = rows[r] || [];
+        for (var c = 0; c < row.length; c++) {
+          if (typeof row[c] === 'string' && QUOTE_NO.test(row[c].trim())) {
+            number = row[c].trim();
+            for (var up = r - 1; up >= 0; up--) {
+              var above = (rows[up] || [])[c];
+              if (typeof above === 'string' && above.trim()) { customer = above.replace(/\s+/g, ' ').trim(); break; }
+            }
+            break;
+          }
+        }
+      }
+      if (!number) { var m = /([A-Z]{1,4}\d{6,})/.exec(fileName || ''); number = m ? m[1] : ''; }
+      if (!number) throw new Error('No quotation number (such as EQ26000040) was found above the column titles or in the file name.');
+      var items = [], warnings = [];
+      for (var i = head.row + 1; i < rows.length; i++) {
+        var line = rows[i] || [];
+        var rawItem = line[head.cols.item], item = cellText(rawItem);
+        if (!item) continue;
+        if (typeof rawItem === 'number' && rawItem !== Math.floor(rawItem)) warnings.push('Row ' + (i + 1) + ': item number ' + item + ' is stored as a number, so a final zero may be missing.');
+        var rawEan = line[head.cols.ean], ean = cleanEan(rawEan);
+        if (!ean && cellText(rawEan).replace(/\D/g, '')) warnings.push('Row ' + (i + 1) + ': “' + cellText(rawEan) + '” in the EAN column is not a valid EAN and was ignored.');
+        items.push({ row: i + 1, item: item, name: head.cols.name === undefined ? '' : cellText(line[head.cols.name]), ean: ean });
+      }
+      if (!items.length) throw new Error('The sheet “' + name + '” has the column titles but no item rows under them.');
+      var cols = {}; Object.keys(head.cols).forEach(function (k) { cols[k] = colLetter(head.cols[k]); });
+      return { number: number, customer: customer, file: fileName || '', sheet: name, headerRow: head.row + 1, cols: cols, items: items, warnings: warnings };
+    }
+    throw new Error('This file has no “Item number” column, so it isn’t a quotation in the offer layout.');
+  }
+
+  function read(file) {
+    return library().then(function (XLSX) {
+      return new Promise(function (resolve, reject) {
+        var fr = new FileReader();
+        fr.onerror = function () { reject(new Error('The file could not be opened. Choose it again.')); };
+        fr.onload = function () { try { resolve(parse(XLSX, fr.result, file.name)); } catch (e) { reject(e); } };
+        fr.readAsArrayBuffer(file);
+      });
+    });
+  }
+  return { read: read, parse: parse };
+})();
+
 /* ===== App ===== */
 (function () {
   'use strict';
@@ -440,7 +565,7 @@ var Decoder = (function () {
     marks: {}, extras: {},
     filter: 'all', query: '',
     sheet: null, saving: false,
-    seq: 0, syncedAt: 0, offline: false,
+    seq: 0, syncedAt: 0, offline: false, eanList: null,
     scan: { open: false, stream: null, live: false, paused: false, timer: null, last: null, cool: null, coolUntil: 0, starting: false, why: '' }
   };
 
@@ -494,6 +619,7 @@ var Decoder = (function () {
     if (c === 'busy') return 'Someone else is saving at this moment. Save again.';
     if (c === 'not_found') return 'That item or quotation is no longer in the Sheet. Refresh the list.';
     if (c === 'empty_remark') return 'Add a quantity or a note.';
+    if (c === 'bad_request') return 'The storage did not accept this. Update the Sheet’s script to the latest version and try again.';
     if (c === 'server_error') return 'The Sheet reported a problem: ' + (e.detail || 'unknown') + '';
     if (c === 'network') return 'No connection to the storage. Check the signal and try again.';
     return 'The storage gave an answer the page couldn’t read (' + (c || 'unknown') + (e && e.detail ? ' ' + e.detail : '') + ').';
@@ -534,6 +660,7 @@ var Decoder = (function () {
     return api('list').then(function (j) {
       if (seq !== S.seq) return;
       S.quotes = j.quotations || [];
+      S.eanList = j.eanList || null;
       var pick = null, want = wantQid || S.qid || recall('scan.qid');
       S.quotes.forEach(function (q) { if (q.id === want) pick = q.id; });
       if (!pick && S.quotes.length) pick = S.quotes[0].id;
@@ -594,6 +721,16 @@ var Decoder = (function () {
     return d.length >= 4 && d.length === q.replace(/\s/g, '').length && String(it.ean).indexOf(d) >= 0;
   }
 
+  /* when the office PC last refreshed the EAN list; shown so a stale list gets noticed */
+  function eanListLine() {
+    var e = S.eanList; if (!e || !e.at) return '';
+    var when = new Date(e.at); if (isNaN(when.getTime())) return '';
+    var days = (Date.now() - when.getTime()) / 86400000;
+    return '<div class="foot">EAN list: ' + Number(e.count || 0).toLocaleString() + ' items, refreshed ' +
+      when.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + '.' +
+      (days >= 3 ? ' <b>That is ' + Math.floor(days) + ' days ago.</b>' : '') + '</div>';
+  }
+
   function rowHtml(it) {
     var m = S.marks['r' + it.row];
     var side = it.ean ? BARS + '<span>' + esc(it.ean) + '</span>' : '<span>No barcode</span>';
@@ -607,10 +744,11 @@ var Decoder = (function () {
 
   function render() {
     var sel = $('quoteSel'), q = S.quote;
-    sel.innerHTML = S.quotes.length
+    var canAdd = CONNECTED && S.status === 'ready';
+    sel.innerHTML = (S.quotes.length
       ? S.quotes.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === S.qid ? ' selected' : '') + '>' + esc(x.id) + '</option>'; }).join('')
-      : '<option>Showroom scan</option>';
-    sel.disabled = S.quotes.length < 2;
+      : '<option value="">Showroom scan</option>') + (canAdd ? '<option value="__add__">Add a quotation…</option>' : '');
+    sel.disabled = !canAdd;
     $('customer').textContent = q ? q.customer : '';
     var markedCount = q ? q.items.filter(function (it) { return S.marks['r' + it.row]; }).length : 0;
     $('progress').innerHTML = q ? '<b>' + markedCount + '</b> of ' + q.items.length + ' marked' : '';
@@ -630,7 +768,7 @@ var Decoder = (function () {
         gate: '',
         loading: '<b>Loading quotations…</b>',
         error: '<b>The quotations can’t be loaded</b>' + esc(S.problem) + '<br><br><button class="btn" data-act="refresh">Try again</button>',
-        ready: '<b>No quotation loaded yet</b>Once a quotation is added to the Sheet, its items appear here.'
+        ready: '<b>No quotation on the phones yet</b>Add one from its quotation file.<br><br><button class="btn primary" data-act="add-quote">Add a quotation</button>'
       }[S.status];
       list.innerHTML = msg ? '<div class="state">' + msg + '</div>' : '';
       return;
@@ -651,7 +789,8 @@ var Decoder = (function () {
           '<span class="row-remark">' + esc(remarkText(x)) + '</span></button>';
       }).join('');
     }
-    html += '<div class="foot">Saving as <b>' + esc(S.name) + '</b>. <button class="text-btn" data-act="signout">Change name or code</button></div>';
+    html += '<div class="foot"><button class="text-btn" data-act="add-quote">Add a quotation</button></div>' + eanListLine() +
+      '<div class="foot">Saving as <b>' + esc(S.name) + '</b>. <button class="text-btn" data-act="signout">Change name or code</button></div>';
     list.innerHTML = html;
   }
 
@@ -672,6 +811,7 @@ var Decoder = (function () {
   function openSheet(sh) {
     S.sheet = sh;
     var el = $('sheet'), html = '';
+    el.classList.remove('is-busy');
     if (sh.type === 'item') {
       var it = itemByRow(sh.row), m = S.marks['r' + sh.row];
       var meta = it.ean ? 'EAN ' + esc(it.ean) + (it.src === 'master' ? ', filled in from the master list' : '') : 'No barcode on this item';
@@ -696,6 +836,23 @@ var Decoder = (function () {
         (x && x.by ? ' Last saved by ' + esc(x.by) + '.' : '') + '</div>' +
         formHtml(x, 'Save extra item', 'Remove extra item') +
         '<div class="sheet-actions"><button class="btn" data-act="find-instead">Find the item by name or number</button></div>';
+    } else if (sh.type === 'add') {
+      html = '<div class="sheet-no">Add a quotation</div>' +
+        '<div class="sheet-meta">Choose the quotation file as it was exported (.xls or .xlsx). Its items then appear on every phone.</div>' +
+        '<p class="form-msg" id="fMsg" role="alert">' + esc(sh.msg || '') + '</p>' +
+        '<div class="sheet-actions"><label class="btn primary" for="quoteIn">Choose the file</label><button class="btn" data-act="sheet-close">Cancel</button></div>';
+    } else if (sh.type === 'add-confirm') {
+      var q = sh.q, withEan = q.items.filter(function (i) { return i.ean; }).length;
+      html = '<div class="sheet-no">' + esc(q.number) + '</div><div class="sheet-name">' + esc(q.customer || 'No customer name found in the file') + '</div>' +
+        '<div class="sheet-meta">' + q.items.length + ' items in ' + esc(q.file) + '. ' + withEan + ' have an EAN in the file; the others are filled in from the EAN list where it has them.</div>' +
+        (sh.replace ? '<div class="sheet-meta warn">' + esc(q.number) + ' is already on the phones' + (sh.had ? ' with ' + sh.had : '') + '. Replacing it swaps in this file’s item list; remarks follow their items.</div>' : '') +
+        (q.warnings.length ? '<ul class="sheet-list">' + q.warnings.slice(0, 6).map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul>' : '') +
+        '<p class="form-msg" id="fMsg" role="alert"></p>' +
+        '<div class="sheet-actions"><button class="btn primary" data-act="add-go">' + (sh.replace ? 'Replace it on the phones' : 'Put it on the phones') + '</button>' +
+        '<button class="btn" data-act="sheet-close">Cancel</button></div>';
+    } else if (sh.type === 'info') {
+      html = '<div class="sheet-no">' + esc(sh.title) + '</div><div class="sheet-meta">' + esc(sh.text) + '</div>' +
+        '<div class="sheet-actions"><button class="btn primary" data-act="sheet-close">OK</button></div>';
     } else if (sh.type === 'read') {
       html = '<div class="sheet-no">' + esc(sh.code) + '</div><div class="sheet-name">Barcode read</div>' +
         '<div class="sheet-meta">' + (VIA[sh.via] || '') + '. No quotation is open, so there is nothing to match it against.</div>' +
@@ -711,6 +868,7 @@ var Decoder = (function () {
   function closeSheet() {
     var sh = S.sheet;
     S.sheet = null; S.saving = false;
+    $('sheet').classList.remove('is-busy');
     $('veil').hidden = true;
     if (S.scan.open) {
       if (sh && sh.code) { S.scan.cool = sh.code; S.scan.coolUntil = Date.now() + 2500; }
@@ -720,6 +878,7 @@ var Decoder = (function () {
 
   function setSaving(on, label) {
     S.saving = on;
+    $('sheet').classList.toggle('is-busy', !!on);
     Array.prototype.forEach.call($('sheet').querySelectorAll('button'), function (b) { b.disabled = on; });
     var m = $('fMsg'); if (m && on) m.textContent = label || '';
   }
@@ -747,6 +906,49 @@ var Decoder = (function () {
       S.seq++;
       if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
       setSaving(false); formMsg(e && e.error === 'network' ? 'Not saved: no connection to the storage. Check the signal and save again.' : problemText(e));
+    });
+  }
+
+  /* ---------- adding a quotation from its file ---------- */
+  function onQuoteFile(file) {
+    if (S.saving) return;
+    if (!S.sheet || S.sheet.type !== 'add') openSheet({ type: 'add' });
+    setSaving(true, 'Reading ' + file.name + '…');
+    QuoteFile.read(file).then(function (q) {
+      var known = null;
+      S.quotes.forEach(function (x) { if (x.id === q.number) known = x; });
+      S.saving = false;
+      openSheet({ type: 'add-confirm', q: q, replace: !!known, had: known ? known.items + ' items and ' + known.marked + ' marked' : '' });
+    }).catch(function (e) {
+      S.saving = false;
+      openSheet({ type: 'add', msg: (e && e.message) || 'The file could not be read.' });
+    });
+  }
+  function sendQuotation() {
+    var sh = S.sheet; if (!sh || sh.type !== 'add-confirm' || S.saving) return;
+    var q = sh.q;
+    S.seq++;
+    setSaving(true, sh.replace ? 'Replacing ' + q.number + '…' : 'Putting ' + q.number + ' on the phones…');
+    api('load', { quotation: q.number, customer: q.customer, sourceFile: q.file, sheet: q.sheet, headerRow: q.headerRow, cols: q.cols,
+                  items: q.items, replace: !!sh.replace, by: S.name }).then(function (j) {
+      S.seq++; S.saving = false;
+      closeSheet();
+      toast(q.number + ' is on the phones');
+      var moved = j.moved || [];
+      loadAll(q.number).then(function () {
+        if (moved.length) openSheet({ type: 'info', title: moved.length + (moved.length === 1 ? ' remark was set aside' : ' remarks were set aside'),
+          text: 'The item is no longer in the quotation: ' + moved.join(', ') + '. Nothing was deleted; the remark is in the tab “Removed remarks” of the Sheet.' });
+      });
+    }).catch(function (e) {
+      S.seq++;
+      if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+      S.saving = false;
+      if (e && e.error === 'exists') {                 /* someone added it in the meantime: ask before replacing */
+        openSheet({ type: 'add-confirm', q: q, replace: true, had: e.items + ' items and ' + e.remarks + ' remarks' });
+        return;
+      }
+      setSaving(false);
+      formMsg(e && e.error === 'network' ? 'Not added: no connection to the storage. Check the signal and try again.' : problemText(e));
     });
   }
 
@@ -891,11 +1093,18 @@ var Decoder = (function () {
     else if (act === 'find-instead') { S.sheet = null; $('veil').hidden = true; closeScan(); S.filter = 'all'; render(); $('search').focus(); }
     else if (act === 'refresh') { loadAll().then(function () { if (S.status === 'ready' && !S.offline) toast('List refreshed'); }); }
     else if (act === 'signout') showGate('');
+    else if (act === 'add-quote') openSheet({ type: 'add' });
+    else if (act === 'add-go') sendQuotation();
   });
   $('search').addEventListener('input', function () { S.query = this.value; render(); });
   $('quoteSel').addEventListener('change', function () {
+    if (this.value === '__add__' || !this.value) { var add = this.value === '__add__'; render(); if (add) openSheet({ type: 'add' }); return; }
     S.quote = null; S.marks = {}; S.extras = {}; buildIndex(); S.qid = this.value;
     loadAll(this.value);
+  });
+  $('quoteIn').addEventListener('change', function () {
+    var f = this.files && this.files[0]; this.value = '';
+    if (f) onQuoteFile(f);
   });
   $('photoIn').addEventListener('change', function () {
     var f = this.files && this.files[0]; this.value = '';
