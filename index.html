@@ -218,6 +218,13 @@ button { cursor: pointer; }
 .scan-actions + .scan-actions { margin-top: 10px; }
 .scan-actions .btn.solid { background: #fff; color: #05080B; font-weight: 600; font-size: 16px; }
 #findOut { margin-top: 10px; max-height: 44vh; overflow-y: auto; }
+.scan-note { position: relative; z-index: 3; margin: 4px 16px 0; padding: 12px 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.96); color: #16222E; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+.scan-note b { display: block; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+.scan-note span { display: block; font-size: 14px; color: #5B6875; overflow-wrap: anywhere; }
+.scan-note.is-bad b { color: #B42318; }
+.note-btns { display: flex; gap: 8px; margin-top: 10px; }
+.note-btns:empty { display: none; }
+.note-btns button { flex: 1; min-height: 42px; border-radius: 9px; border: 1px solid #D5DBE0; background: #fff; color: #16222E; font-weight: 500; font-size: 15px; }
 </style>
 </head>
 <body>
@@ -252,6 +259,7 @@ button { cursor: pointer; }
     <span class="scan-title">Scan</span>
     <button class="scan-close" data-act="scan-close">Close</button>
   </div>
+  <div id="scanNote" class="scan-note" role="status" hidden></div>
   <div class="finder"><div class="finder-box"><div class="laser"></div></div></div>
   <div class="scan-bottom">
     <p id="scanMsg" class="scan-msg" role="status"></p>
@@ -323,8 +331,9 @@ var Decoder = (function () {
     }).catch(function () { return null; });
   }
 
-  var zxReader = null;
+  var zxReader = null, lastSpan = null;      /* lastSpan: where across the picture the last barcode sat, as fractions of the width */
   function zxingDecode(canvas) {
+    lastSpan = null;
     if (!window.ZXing) return null;
     var Z = window.ZXing;
     if (!zxReader) {
@@ -339,7 +348,13 @@ var Decoder = (function () {
     for (var i = 0; i < bins.length; i++) {
       try {
         var res = zxReader.decodeWithState(new Z.BinaryBitmap(new bins[i](src)));
-        if (res && res.getText()) return res.getText();
+        if (res && res.getText()) {
+          try {
+            var xs = (res.getResultPoints() || []).map(function (pt) { return pt.getX(); });
+            if (xs.length >= 2) lastSpan = [Math.min.apply(null, xs) / canvas.width, Math.max.apply(null, xs) / canvas.width];
+          } catch (e) { /* the position is a nicety */ }
+          return res.getText();
+        }
       } catch (e) { /* not found is the normal miss */ }
     }
     return null;
@@ -434,12 +449,15 @@ var Decoder = (function () {
       var c = toCanvas(video, vw, vh, 1280, false, crop);
       if (nd) {
         return nd.detect(c).then(function (r) {
-          for (var i = 0; i < r.length; i++) { var a = accept(r[i].rawValue); if (a) return { code: a, engine: 'native' }; }
+          for (var i = 0; i < r.length; i++) {
+            var a = accept(r[i].rawValue), bb = r[i].boundingBox;
+            if (a) return { code: a, engine: 'native', span: bb ? [bb.x / c.width, (bb.x + bb.width) / c.width] : null };
+          }
           return null;
         }).catch(function () { return null; });
       }
       var a = accept(zxingDecode(c));
-      return a ? { code: a, engine: 'zxing' } : null;
+      return a ? { code: a, engine: 'zxing', span: lastSpan } : null;
     });
   }
 
@@ -486,12 +504,12 @@ var ItemRead = (function () {
     return out;
   }
   /* index: object mapping UPPERCASE item number -> item number as written. Returns up to `limit` item numbers, best first. */
-  function match(text, index, itemsUpper, limit) {
+  function match(text, index, itemsUpper, limit, exactOnly) {
     limit = limit || 6;
     var toks = tokens(text), found = [], seen = {};
     function take(key, score) { if (!seen[key]) { seen[key] = true; found.push({ item: index[key], score: score + key.length / 100 }); } }
     for (var i = 0; i < toks.length; i++) if (index[toks[i]] !== undefined) take(toks[i], 2);
-    if (!found.length && itemsUpper) {
+    if (!found.length && itemsUpper && !exactOnly) {
       for (var t = 0; t < toks.length; t++) {
         var tok = toks[t];
         if (tok.length < 7 || (tok.match(/\d/g) || []).length < 4) continue;      /* short plain numbers are too dense to guess */
@@ -560,7 +578,8 @@ var ItemRead = (function () {
     seq: 0, syncedAt: 0, offline: false,
     cat: { at: '', items: [], byEan: {}, byItem: {}, upper: [], state: 'none' },   // none | loading | ready | empty | failed
     photos: {},                   // photo id -> data URL, kept while the page is open
-    scan: { open: false, stream: null, live: false, paused: false, timer: null, last: null, cool: null, coolUntil: 0, starting: false, why: '' }
+    scan: { open: false, stream: null, live: false, paused: false, timer: null, last: null, cool: null, coolUntil: 0, starting: false, why: '',
+            sight: null, deciding: false, decideTimer: null, cycle: null, box: null, streak: {}, recent: {}, textOn: false, textReady: false, textFailed: false, textRun: 0, adding: false, retry: null, noteTimer: null }
   };
 
   function esc(s) {
@@ -658,6 +677,7 @@ var ItemRead = (function () {
       if (items[i][1]) { var k = Decoder.gtinKey(items[i][1]); if (k) (byEan[k] = byEan[k] || []).push(i); }
     }
     S.cat = { at: at, items: items, byEan: byEan, byItem: byItem, upper: upper, state: items.length ? 'ready' : 'empty' };
+    if (items.length) textReader().catch(function () { /* scanning barcodes works without it */ });      /* get the text reader ready before the first scan */
   }
   function itemAt(i) { var r = S.cat.items[i]; return { item: r[0], ean: r[1] || '', name: r[2] || '' }; }
   function itemsForEan(code) { return (S.cat.byEan[Decoder.gtinKey(code)] || []).map(itemAt); }
@@ -834,7 +854,7 @@ var ItemRead = (function () {
   }
 
   /* ---------- sheets ---------- */
-  var VIA = { camera: 'Read with the live camera', photo: 'Read from a photo', typed: 'Barcode typed in', text: 'Item number read from a photo', find: 'Found by typing' };
+  var VIA = { camera: 'Barcode read with the camera', photo: 'Barcode read from a photo', typed: 'Barcode typed in', text: 'Item number read by the camera', both: 'Barcode and item number agreed', find: 'Found by typing' };
 
   function pickHtml(items) {
     return items.map(function (it) {
@@ -918,6 +938,8 @@ var ItemRead = (function () {
     $('veil').hidden = true;
     if (S.scan.open) {
       if (sh && sh.code) { S.scan.cool = sh.code; S.scan.coolUntil = Date.now() + 2500; }
+      if (sh && sh.items) sh.items.forEach(function (it) { quiet(it.item); });
+      if (sh && sh.item) quiet(sh.item.item);
       resumeLive();
     }
   }
@@ -1083,17 +1105,20 @@ var ItemRead = (function () {
   function scanMsg(t) { $('scanMsg').textContent = t || ''; }
   function idleMsg() {
     if (S.cat.state !== 'ready') return catalogLine() || 'The item list is not on this phone yet.';
-    return S.scan.live
-      ? 'Hold the barcode inside the frame, about a hand’s length away. No barcode? Put the printed item number in the frame and tap Read item number.'
-      : 'The live camera isn’t available here (' + (S.scan.why || 'not started') + '). Take a photo of the barcode, or use Read item number.';
+    if (!S.scan.live) return 'The live camera isn’t available here (' + (S.scan.why || 'not started') + '). Take a photo of the barcode, or use Read item number.';
+    return 'Point at the barcode or the printed item number. Items are added by themselves.' + (S.scan.textReady ? '' : ' The text reader is still loading; barcodes already work.');
   }
   function openScan() {
     S.scan.open = true; S.scan.last = null; S.scan.cool = null;
+    S.scan.sight = null; S.scan.deciding = false; S.scan.cycle = null; S.scan.streak = {}; S.scan.recent = {}; S.scan.adding = false;
+    hideNote();
     $('scan').hidden = false; $('typeRow').hidden = true;
     startCamera();
+    startTextLoop();
   }
   function closeScan() {
     S.scan.open = false;
+    clearTimeout(S.scan.decideTimer); S.scan.sight = null; S.scan.deciding = false;
     stopCamera();
     $('scan').hidden = true;
   }
@@ -1137,12 +1162,21 @@ var ItemRead = (function () {
   }
   function tick() {
     if (!S.scan.live || S.scan.paused || !S.scan.open) return;
+    if (S.scan.deciding) {                       /* a barcode is waiting for the printed number: only keep track of where it is */
+      Decoder.decodeFrame($('video')).catch(function () { return null; }).then(function (r) {
+        if (r && r.span) S.scan.box = { span: r.span, at: Date.now() };
+        if (S.scan.live && S.scan.open && !S.scan.paused) S.scan.timer = setTimeout(tick, 150);
+      });
+      return;
+    }
     Decoder.decodeFrame($('video')).catch(function () { return null; }).then(function (r) {
       if (!S.scan.live || S.scan.paused || !S.scan.open) return;
-      if (r && !(r.code === S.scan.cool && Date.now() < S.scan.coolUntil)) {
+      if (r && r.span) S.scan.box = { span: r.span, at: Date.now() };
+      if (r && r.code === S.scan.cool && Date.now() < S.scan.coolUntil) S.scan.coolUntil = Date.now() + 2500;   /* still in view: stay quiet */
+      else if (r) {
         /* accept at once when the engine is the phone's own detector or the code is in the item list;
            otherwise wait for the same read twice in a row */
-        if (r.engine === 'native' || isKnownCode(r.code) || S.scan.last === r.code) { onCode(r.code, 'camera', true); return; }
+        if (r.engine === 'native' || isKnownCode(r.code) || S.scan.last === r.code) { sawBarcode(r.code); S.scan.timer = setTimeout(tick, 120); return; }
         S.scan.last = r.code;
       }
       S.scan.timer = setTimeout(tick, 90);
@@ -1155,10 +1189,169 @@ var ItemRead = (function () {
     if (navigator.vibrate) { try { navigator.vibrate(60); } catch (e) { /* not supported */ } }
     if (S.cat.state !== 'ready') { openSheet({ type: 'info', title: code, text: catalogLine() || 'The item list is not on this phone yet, so this barcode cannot be looked up.', code: code }); return; }
     var hits = itemsForEan(code);
-    if (hits.length === 1) chooseItem(hits[0], via, code);
-    else if (hits.length > 1) openSheet({ type: 'pick', title: code, text: hits.length + ' items share this barcode. Choose the one in hand.', items: hits, via: via, code: code });
+    if (hits.length === 1 && sure !== false) autoAdd(hits[0], via, code);
+    else if (hits.length === 1) chooseItem(hits[0], via, code);
+    else if (hits.length > 1) openSheet({ type: 'pick', title: code, text: hits.length + ' items share this barcode. Tap the one in hand.', items: hits, via: via, code: code, auto: true });
     else openSheet({ type: 'notfound', title: code, code: code, ean: code, via: via,
       text: sure === false ? 'This read could not be confirmed, and it is not in the item list. Scan again first.' : 'This barcode is not in the item list.' });
+  }
+
+  /* ---------- adding by itself: barcode and printed item number ---------- */
+  function showNote(title, sub, buttons, bad, keep) {
+    var n = $('scanNote');
+    n.className = 'scan-note' + (bad ? ' is-bad' : '');
+    n.innerHTML = '<b>' + esc(title) + '</b>' + (sub ? '<span>' + esc(sub) + '</span>' : '') +
+      '<div class="note-btns">' + (buttons || []).map(function (b) { return '<button data-act="' + b.act + '"' + (b.id ? ' data-id="' + esc(b.id) + '"' : '') + '>' + esc(b.label) + '</button>'; }).join('') + '</div>';
+    n.hidden = false;
+    clearTimeout(S.scan.noteTimer);
+    if (!keep) S.scan.noteTimer = setTimeout(hideNote, 7000);
+  }
+  function hideNote() { clearTimeout(S.scan.noteTimer); $('scanNote').hidden = true; }
+  function quiet(itemNo, code) {            /* do not react to the same item again while it stays in view */
+    if (itemNo) S.scan.recent[String(itemNo).toUpperCase()] = Date.now() + 4000;
+    if (code) { S.scan.cool = code; S.scan.coolUntil = Date.now() + 4000; }
+  }
+  function isQuiet(itemNo) { return (S.scan.recent[String(itemNo).toUpperCase()] || 0) > Date.now(); }
+  /* longer item numbers that begin with this one: the camera may have read only the first part */
+  function extensionsOf(itemNo, limit) {
+    var u = String(itemNo).toUpperCase(), out = [];
+    for (var i = 0; i < S.cat.upper.length && out.length < limit; i++) if (S.cat.upper[i].length > u.length && S.cat.upper[i].indexOf(u) === 0) out.push(itemAt(i));
+    return out;
+  }
+
+  function autoAdd(it, via, code) {
+    quiet(it.item, code);
+    var has = lineForItem(it.item);
+    if (has) {
+      showNote('Already in this quotation: ' + it.item, it.name, [{ act: 'note-edit', id: has.id, label: 'Quantity / note' }]);
+      if (!S.sheet) resumeLive();
+      return;
+    }
+    if (S.scan.adding) return;
+    S.scan.adding = true; S.scan.paused = true;
+    var line = { id: newId(), type: 'item', item: it.item, ean: it.ean, name: it.name, qty: '', note: '', via: via };
+    S.seq++;
+    showNote('Adding ' + it.item + '…', it.name, [], false, true);
+    api('line', { quotation: S.qid, line: line, by: S.name }).then(function (j) {
+      S.seq++; S.lines = j.lines || []; S.syncedAt = Date.now(); S.offline = false; render();
+      $('scan').classList.add('is-hit');
+      if (navigator.vibrate) { try { navigator.vibrate(60); } catch (e) { /* not supported */ } }
+      showNote('Added ' + it.item, it.name + (VIA[via] ? ' (' + VIA[via].charAt(0).toLowerCase() + VIA[via].slice(1) + ')' : ''), [{ act: 'note-undo', id: line.id, label: 'Undo' }, { act: 'note-edit', id: line.id, label: 'Quantity / note' }]);
+    }).catch(function (e) {
+      S.seq++;
+      if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+      S.scan.retry = { it: it, via: via, code: code };
+      delete S.scan.recent[String(it.item).toUpperCase()]; S.scan.coolUntil = Date.now() + 6000;
+      showNote('Not added: ' + it.item, e && e.error === 'network' ? 'No connection to the storage. Check the signal.' : problemText(e), [{ act: 'note-retry', label: 'Try again' }], true, true);
+    }).then(function () {
+      S.scan.adding = false;
+      quiet(it.item, code);
+      if (S.scan.open && !S.sheet) setTimeout(function () { if (S.scan.open && !S.sheet && !S.scan.adding) resumeLive(); }, 600);
+    });
+  }
+  function undoAdd(id) {
+    var ln = lineById(id); if (!ln) { hideNote(); return; }
+    S.seq++;
+    showNote('Removing ' + ln.item + '…', '', [], false, true);
+    api('unline', { quotation: S.qid, id: id }).then(function (j) {
+      S.seq++; S.lines = j.lines || []; render(); quiet(ln.item, ln.ean);
+      showNote('Removed ' + ln.item, 'It is no longer in the quotation.', []);
+    }).catch(function (e) {
+      S.seq++; showNote('Not removed: ' + ln.item, e && e.error === 'network' ? 'No connection to the storage.' : problemText(e), [{ act: 'note-undo', id: id, label: 'Try again' }], true, true);
+    });
+  }
+  function ask(sheet) { S.scan.paused = true; $('scan').classList.add('is-hit'); hideNote(); openSheet(sheet); }
+
+  /* a barcode was read by the live camera: give the text reader a moment to see the printed number too */
+  function sawBarcode(code) {
+    if (S.scan.sight || S.scan.adding) return;
+    S.scan.sight = { code: code, at: Date.now(), items: itemsForEan(code), tries: 0 };
+    S.scan.deciding = true;
+    clearTimeout(S.scan.decideTimer);
+    /* text reader ready: a short look for the printed number. Still loading: wait for it. Not available: the barcode decides. */
+    S.scan.decideTimer = setTimeout(decideBarcode, S.cat.state !== 'ready' || S.scan.textFailed ? 0 : S.scan.textReady ? 1800 : 6000);
+  }
+  function decideBarcode() {
+    var sg = S.scan.sight; if (!sg || !S.scan.open) return;
+    clearTimeout(S.scan.decideTimer);
+    if (S.cat.state !== 'ready') { S.scan.sight = null; S.scan.deciding = false; onCode(sg.code, 'camera', true); return; }
+    var cyc = S.scan.cycle, seen = (cyc && cyc.at >= sg.at - 600) ? cyc.items : [];
+    var agree = seen.filter(function (t) { return sg.items.some(function (i) { return i.item === t.item; }); });
+    var steady = seen.filter(function (t) { return (S.scan.streak[t.item] || 0) >= 2; });
+    /* a number that was read only once and does not match may be a misread: look once more before asking */
+    if (!agree.length && seen.length && !steady.length && sg.tries < 2) { sg.tries++; S.scan.decideTimer = setTimeout(decideBarcode, 1800); return; }
+    S.scan.sight = null; S.scan.deciding = false;
+    if (agree.length === 1) { autoAdd(agree[0], 'both', sg.code); return; }
+    if (steady.length && sg.items.length) {
+      ask({ type: 'pick', title: 'Barcode and item number differ', auto: true, via: 'camera', code: sg.code,
+            text: 'The barcode ' + sg.code + ' belongs to ' + sg.items.map(function (i) { return i.item; }).join(', ') + ', but the printed number reads ' + steady.map(function (i) { return i.item; }).join(', ') + '. Tap the item in hand.',
+            items: sg.items.concat(steady.filter(function (t) { return !sg.items.some(function (i) { return i.item === t.item; }); })) });
+      return;
+    }
+    if (!sg.items.length && steady.length) {
+      ask({ type: 'pick', title: 'Barcode not in the item list', auto: true, via: 'text', code: sg.code,
+            text: 'The barcode ' + sg.code + ' is not in the item list. The printed number reads as below. Tap it if that is the item.', items: steady, more: extensionsOf(steady[0].item, 8) });
+      return;
+    }
+    if (sg.items.length === 1) { autoAdd(sg.items[0], 'camera', sg.code); return; }
+    S.scan.paused = true;
+    onCode(sg.code, 'camera', true);                     /* several items share it, or it is unknown: ask */
+  }
+
+  /* the text reader looks at the framed band again and again while the scan screen is open */
+  function startTextLoop() {
+    if (S.scan.textOn) return;
+    S.scan.textOn = true;
+    var run = ++S.scan.textRun;
+    textReader().then(function (worker) {
+      if (S.scan.open && !S.scan.paused && S.scan.live) scanMsg(idleMsg());
+      function cycle() {
+        if (!S.scan.open || run !== S.scan.textRun) { S.scan.textOn = false; return; }
+        var v = $('video');
+        if (!S.scan.live || S.scan.paused || S.cat.state !== 'ready' || !v.videoWidth) { setTimeout(cycle, 250); return; }
+        var at = Date.now(), vw = v.videoWidth, vh = v.videoHeight;
+        var band = canvasOf(v, vw, vh, { x: 0, y: Math.round(vh * 0.25), w: vw, h: Math.round(vh * 0.5) }, 1100);
+        var box = S.scan.box && at - S.scan.box.at < 1500 ? S.scan.box.span : null;
+        if (box) {                                  /* cover the barcode: next to one, the reader overlooks printed text */
+          var g = band.getContext('2d'), x0 = Math.max(0, box[0] - 0.05) * band.width, x1 = Math.min(1, box[1] + 0.05) * band.width;
+          g.fillStyle = '#fff'; g.fillRect(x0, 0, x1 - x0, band.height);
+        }
+        var looks = [function () { return ItemRead.prep(band, false); }, function () { return ItemRead.prep(band, true); }, function () { return band; }], i = 0;
+        function done(items) {
+          var streak = {};
+          items.forEach(function (it) { streak[it.item] = (S.scan.streak[it.item] || 0) + 1; });
+          S.scan.streak = streak; S.scan.cycle = { at: at, items: items };
+          if (S.scan.open && !S.scan.paused) {
+            if (S.scan.sight) { if (at >= S.scan.sight.at - 600) decideBarcode(); }
+            else textAlone(items);
+          }
+          setTimeout(cycle, 60);
+        }
+        function look() {
+          if (i >= looks.length) { done([]); return; }
+          worker.setParameters({ tessedit_pageseg_mode: '6' }).then(function () { return worker.recognize(looks[i++]()); }).then(function (r) {
+            var found = ItemRead.match(r.data.text, S.cat.byItem, S.cat.upper, 6, true).map(itemAt);
+            if (found.length) done(found); else look();
+          }).catch(function () { done([]); });
+        }
+        look();
+      }
+      cycle();
+    }).catch(function () { S.scan.textOn = false; });
+  }
+  /* no barcode in view: a printed number counts once it was read the same way twice in a row */
+  function textAlone(items) {
+    if (S.scan.adding || S.scan.deciding) return;
+    items.forEach(function (it) { if (isQuiet(it.item)) quiet(it.item); });          /* still in view: stay quiet */
+    var fresh = items.filter(function (it) { return !isQuiet(it.item); });
+    var steady = fresh.filter(function (it) { return (S.scan.streak[it.item] || 0) >= 2; });
+    if (!steady.length) return;
+    var longer = extensionsOf(steady[0].item, 8);
+    if (steady.length === 1 && items.length === 1 && !longer.length) { autoAdd(steady[0], 'text'); return; }
+    steady.forEach(function (it) { quiet(it.item); });
+    ask({ type: 'pick', title: 'Which item?', auto: true, via: 'text',
+          text: steady.length > 1 ? 'Several item numbers are in the picture. Tap the item in hand.' : 'Longer item numbers start the same way, so the camera may have read only part of it. Tap the item in hand.',
+          items: steady, more: longer.filter(function (x) { return !steady.some(function (y) { return y.item === x.item; }); }) });
   }
 
   function fileToSource(file) {
@@ -1216,7 +1409,8 @@ var ItemRead = (function () {
       el.onload = start; el.onerror = function () { el.remove(); reject(new Error('download')); };
       document.head.appendChild(el);
     });
-    ocrWorker.catch(function () { ocrWorker = null; });
+    S.scan.textFailed = false;
+    ocrWorker.then(function () { S.scan.textReady = true; }, function () { ocrWorker = null; S.scan.textFailed = true; });
     return ocrWorker;
   }
   function canvasOf(source, sw, sh, crop, maxW) {
@@ -1246,8 +1440,8 @@ var ItemRead = (function () {
       openSheet({ type: 'notfound', title: 'No item number read', text: 'Nothing in the picture matches an item number from the item list. Move closer so the number fills the frame, or find the item by typing.' });
       return;
     }
-    if (found.length === 1 && !siblings(found[0].item, 1).length) { chooseItem(found[0], 'text'); return; }
-    openSheet({ type: 'pick', title: 'Which item?', text: 'Read from the picture. Tap the item in hand.', items: found, more: siblings(found[0].item, 8).filter(function (s) { return !found.some(function (f) { return f.item === s.item; }); }), via: 'text' });
+    openSheet({ type: 'pick', title: 'Which item?', auto: true, via: 'text', text: 'Read from the picture. Tap the item in hand.', items: found,
+                more: siblings(found[0].item, 8).filter(function (s) { return !found.some(function (f) { return f.item === s.item; }); }) });
   }
   function readFailed() {
     resumeLive();
@@ -1285,7 +1479,14 @@ var ItemRead = (function () {
     else if (act === 'type-go') typedLookup();
     else if (act === 'read-text') { if (!S.scan.open) openScan(); else readPrinted(); }
     else if (act === 'open-line') { var l = lineById(b.getAttribute('data-id')); if (l) openSheet(l.type === 'new' ? { type: 'newitem', id: l.id } : { type: 'line', id: l.id, via: '' }); }
-    else if (act === 'pick-item') { var it = itemByNumber(b.getAttribute('data-item')); if (it) chooseItem(it, sh && sh.type === 'find' ? 'find' : (sh && sh.via) || 'find', sh && sh.code); }
+    else if (act === 'pick-item') {
+      var it = itemByNumber(b.getAttribute('data-item'));
+      if (it && sh && sh.auto) { var via = sh.via, code = sh.code; S.sheet = null; $('veil').hidden = true; autoAdd(it, via, code); }      /* asked because unsure: the tap is the answer */
+      else if (it) chooseItem(it, sh && sh.type === 'find' ? 'find' : (sh && sh.via) || 'find', sh && sh.code);
+    }
+    else if (act === 'note-undo') undoAdd(b.getAttribute('data-id'));
+    else if (act === 'note-edit') { var ln = lineById(b.getAttribute('data-id')); hideNote(); if (ln) { S.scan.paused = true; openSheet({ type: 'line', id: ln.id, via: '' }); } }
+    else if (act === 'note-retry') { var again = S.scan.retry; S.scan.retry = null; if (again) autoAdd(again.it, again.via, again.code); }
     else if (act === 'find') openSheet({ type: 'find', code: sh && sh.code });
     else if (act === 'new-item') openSheet({ type: 'newitem', ean: sh && sh.ean ? sh.ean : '', code: sh && sh.code, via: 'new' });
     else if (act === 'save-line') saveLine();
