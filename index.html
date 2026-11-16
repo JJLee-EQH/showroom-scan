@@ -6,8 +6,8 @@
      Paste the web app URL from Apps Script between the quotes (it ends in /exec).
      ==================================================================================== -->
 <script>
-var API_URL = 'https://script.google.com/macros/s/AKfycbyyhF-AlK0HD7kEKOoiAtiYplkkN12p_eX3vIcQN5Z9KbQJ2Q6SgiEyGkdPoYWxviA_Uw/exec';
-var REFRESH_MS = 20000;   /* how often an open phone re-reads the remarks, in milliseconds */
+var API_URL = 'https://script.google.com/macros/s/AKfycbx2dsvlysR8l3rACA9rjOz7YeMt8D3VYCs6jvR2HI2gt2csDY6P9JWvECF8Xb50UZqzWg/exec';
+var REFRESH_MS = 20000;   /* how often an open phone re-reads the lines, in milliseconds */
 </script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -202,6 +202,22 @@ button { cursor: pointer; }
   z-index: 40; background: var(--ink); color: var(--surface); padding: 10px 16px; border-radius: 999px;
   font-size: 15px; font-weight: 500; max-width: 90vw; text-align: center;
 }
+
+/* ---------- version 2 additions ---------- */
+.dock-row { display: flex; gap: 10px; margin-top: 10px; }
+.dock-row .btn { flex: 1; min-height: 46px; font-size: 15px; padding: 8px; box-shadow: 0 4px 12px rgba(22, 34, 46, 0.14); }
+.list { padding-bottom: 176px; }
+.tag { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; background: var(--ok-bg); color: var(--ok); font-size: 12px; font-weight: 500; vertical-align: middle; }
+.photos { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.ph { position: relative; width: 84px; height: 84px; border-radius: 10px; overflow: hidden; background: var(--page); border: 1px solid var(--line); }
+.ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ph img:not([src]) { visibility: hidden; }
+.ph-x { position: absolute; top: 2px; right: 2px; width: 28px; height: 28px; border-radius: 50%; border: 0; background: rgba(5, 8, 11, 0.7); color: #fff; font-size: 18px; line-height: 1; }
+.ph-add { display: flex; align-items: center; justify-content: center; text-align: center; font-size: 14px; font-weight: 500; color: var(--primary); border-style: dashed; cursor: pointer; }
+.sheet.is-busy .ph-add { pointer-events: none; opacity: 0.55; }
+.scan-actions + .scan-actions { margin-top: 10px; }
+.scan-actions .btn.solid { background: #fff; color: #05080B; font-weight: 600; font-size: 16px; }
+#findOut { margin-top: 10px; max-height: 44vh; overflow-y: auto; }
 </style>
 </head>
 <body>
@@ -213,40 +229,41 @@ button { cursor: pointer; }
       <button id="refreshBtn" class="link-btn" data-act="refresh" hidden>Refresh</button>
     </div>
     <div class="sub"><span id="customer"></span><span id="progress"></span></div>
-    <div class="tools" id="tools" hidden>
-      <input id="search" class="search" type="search" placeholder="Item number or name" autocomplete="off" aria-label="Find by item number or name">
-      <div class="seg" role="group" aria-label="Show">
-        <button data-act="filter" data-v="all" aria-pressed="true">All</button>
-        <button data-act="filter" data-v="marked" aria-pressed="false">Marked</button>
-      </div>
-    </div>
   </div>
 </header>
 
 <div id="notice" class="notice" hidden></div>
 <main id="list" class="list" aria-live="polite"></main>
 
-<div class="dock"><div class="dock-in">
+<div class="dock" id="dock" hidden><div class="dock-in">
   <button class="btn primary big" data-act="scan">
     <svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true"><g fill="currentColor"><rect x="0" width="2" height="20"/><rect x="4" width="1" height="20"/><rect x="7" width="3" height="20"/><rect x="12" width="1" height="20"/><rect x="15" width="2" height="20"/><rect x="19" width="1" height="20"/><rect x="22" width="1" height="20"/><rect x="24" width="2" height="20"/></g></svg>
-    Scan barcode
+    Scan barcode or item number
   </button>
+  <div class="dock-row">
+    <button class="btn" data-act="find">Find by typing</button>
+    <button class="btn" data-act="new-item">New item with photos</button>
+  </div>
 </div></div>
 
 <div id="scan" class="scan" hidden>
   <video id="video" playsinline muted autoplay></video>
   <div class="scan-top">
-    <span class="scan-title">Scan barcode</span>
+    <span class="scan-title">Scan</span>
     <button class="scan-close" data-act="scan-close">Close</button>
   </div>
   <div class="finder"><div class="finder-box"><div class="laser"></div></div></div>
   <div class="scan-bottom">
     <p id="scanMsg" class="scan-msg" role="status"></p>
     <div class="scan-actions">
-      <label class="btn" for="photoIn">Take a photo instead</label>
-      <button class="btn" data-act="type-toggle">Type the number</button>
+      <button class="btn solid" data-act="read-text">Read item number</button>
+    </div>
+    <div class="scan-actions">
+      <label class="btn" for="photoIn">Photo of barcode</label>
+      <button class="btn" data-act="type-toggle">Type the barcode</button>
     </div>
     <input id="photoIn" type="file" accept="image/*" capture="environment" hidden>
+    <input id="ocrIn" type="file" accept="image/*" capture="environment" hidden>
     <div class="type-row" id="typeRow" hidden>
       <input id="typeIn" inputmode="numeric" autocomplete="off" placeholder="EAN digits" aria-label="EAN digits">
       <button class="btn" data-act="type-go">Look up</button>
@@ -254,7 +271,7 @@ button { cursor: pointer; }
   </div>
 </div>
 
-<input id="quoteIn" type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+<input id="newPhotoIn" type="file" accept="image/*" multiple hidden>
 
 <div id="gate" class="gate" hidden>
   <form id="gateForm" class="gate-card" autocomplete="off">
@@ -429,143 +446,120 @@ var Decoder = (function () {
   return { digitsOnly: digitsOnly, checkDigitOk: checkDigitOk, gtinKey: gtinKey, decodeStill: decodeStill, decodeFrame: decodeFrame };
 })();
 
-/* ===== Reading a quotation file (.xls / .xlsx) in the browser ===== */
-var QuoteFile = (function () {
-  /* the reader library is fetched only when someone adds a quotation */
-  var URLS = ['https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
-              'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'];
-  var loading = null;
-  function library() {
-    if (window.XLSX) return Promise.resolve(window.XLSX);
-    if (loading) return loading;
-    loading = new Promise(function (resolve, reject) {
-      var i = 0;
-      (function next() {
-        if (i >= URLS.length) { loading = null; reject(new Error('The file reader could not be downloaded. Check the connection and try again.')); return; }
-        var el = document.createElement('script'); el.src = URLS[i++]; el.async = true;
-        el.onload = function () { if (window.XLSX) resolve(window.XLSX); else next(); };
-        el.onerror = function () { el.remove(); next(); };
-        document.head.appendChild(el);
-      })();
-    });
-    return loading;
-  }
-
-  function norm(v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase(); }
-  function cellText(v) {
-    if (v == null) return '';
-    if (typeof v === 'number' && isFinite(v) && v === Math.floor(v)) return String(v);
-    return String(v).replace(/\s+/g, ' ').trim();
-  }
-  function cleanEan(v) {
-    var d = cellText(v).replace(/\D/g, '');
-    return [8, 12, 13, 14].indexOf(d.length) >= 0 ? d : '';
-  }
-  function colLetter(i) { var s = ''; i += 1; while (i) { var r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = (i - 1 - r) / 26; } return s; }
-
-  /* the row with the column titles: the one that has an "Item number" cell; exact titles first, then looser matches */
-  function findHeader(rows) {
-    var exact = { item: ['item number', 'item no.', 'item no', 'article number'], name: ['item name'],
-                  ean: ['ean-no.', 'ean-no', 'ean no.', 'ean no', 'ean', 'ean code', 'barcode'], remark: ['remark', 'remarks'] };
-    var loose = { name: /\bitem name\b|\bname\b/, ean: /\bean\b/, remark: /\bremarks?\b/ };
-    for (var r = 0; r < Math.min(rows.length, 80); r++) {
-      var cells = (rows[r] || []).map(norm);
-      if (!cells.some(function (c) { return exact.item.indexOf(c) >= 0; })) continue;
-      var cols = {}, used = [];
-      Object.keys(exact).forEach(function (key) {
-        for (var n = 0; n < exact[key].length && cols[key] === undefined; n++) {
-          var at = cells.indexOf(exact[key][n]);
-          if (at >= 0) cols[key] = at;
-        }
-        if (cols[key] === undefined && loose[key]) {
-          for (var i = 0; i < cells.length; i++) if (cells[i] && loose[key].test(cells[i]) && used.indexOf(i) < 0) { cols[key] = i; break; }
-        }
-        if (cols[key] !== undefined) used.push(cols[key]);
-      });
-      return { row: r, cols: cols };
+/* Finding item numbers in text read from a photo. Only numbers that exist in the item list are returned. */
+var ItemRead = (function () {
+  function editDistanceAtMost1(a, b) {
+    if (a === b) return true;
+    var la = a.length, lb = b.length;
+    if (Math.abs(la - lb) > 1) return false;
+    var i = 0, j = 0, edits = 0;
+    while (i < la && j < lb) {
+      if (a.charCodeAt(i) === b.charCodeAt(j)) { i++; j++; continue; }
+      if (++edits > 1) return false;
+      if (la > lb) i++; else if (lb > la) j++; else { i++; j++; }
     }
-    return null;
+    return edits + (la - i) + (lb - j) <= 1;
   }
-
-  var QUOTE_NO = /^[A-Z]{1,4}\d{6,}([-\/.][A-Za-z0-9]+)?$/;
-
-  function parse(XLSX, buffer, fileName) {
-    var wb;
-    try { wb = XLSX.read(new Uint8Array(buffer), { type: 'array' }); }
-    catch (e) { throw new Error('This file can’t be read as an Excel file. Choose the quotation as it was exported (.xls or .xlsx).'); }
-    for (var s = 0; s < wb.SheetNames.length; s++) {
-      var name = wb.SheetNames[s], ws = wb.Sheets[name];
-      if (!ws || !ws['!ref']) continue;
-      var box = XLSX.utils.decode_range(ws['!ref']); box.s.r = 0; box.s.c = 0;      /* count rows and columns from A1, as Excel does */
-      var rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: true, range: box });
-      var head = findHeader(rows);
-      if (!head) continue;
-      var missing = [];
-      if (head.cols.ean === undefined) missing.push('EAN-NO.');
-      if (head.cols.remark === undefined) missing.push('Remark');
-      if (missing.length) throw new Error('The sheet “' + name + '” has an “Item number” column but no ' + missing.join(' and no ') + ' column.');
-      var number = '', customer = '';
-      for (var r = head.row - 1; r >= 0 && !number; r--) {
-        var row = rows[r] || [];
-        for (var c = 0; c < row.length; c++) {
-          if (typeof row[c] === 'string' && QUOTE_NO.test(row[c].trim())) {
-            number = row[c].trim();
-            for (var up = r - 1; up >= 0; up--) {
-              var above = (rows[up] || [])[c];
-              if (typeof above === 'string' && above.trim()) { customer = above.replace(/\s+/g, ' ').trim(); break; }
-            }
-            break;
-          }
+  var LOOKALIKE = { O: '0', Q: '0', D: '0', I: '1', L: '1', '|': '1', Z: '2', S: '5', B: '8', G: '6' };
+  /* text -> candidate strings: tokens, tokens joined with their neighbour, and look-alike corrections of the numeric part */
+  function tokens(text) {
+    var raw = String(text || '').toUpperCase().replace(/[,;·•]/g, '.').split(/[\s:=#()\[\]{}<>"'`*_\\\/|]+/);
+    var out = [], seen = {};
+    function add(t) {
+      t = t.replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '');
+      if (t.length < 3 || t.length > 20 || !/\d/.test(t) || seen[t]) return;
+      seen[t] = true; out.push(t);
+    }
+    function variants(t) {
+      add(t);
+      var cut = t.search(/[.\-]/), headEnd = cut < 0 ? t.length : cut;
+      var head = t.slice(0, headEnd).replace(/[OQDIL|ZSBG]/g, function (c) { return LOOKALIKE[c]; });
+      add(head + t.slice(headEnd));
+      add(t.replace(/\s+/g, ''));
+    }
+    for (var i = 0; i < raw.length; i++) {
+      if (!raw[i]) continue;
+      variants(raw[i]);
+      if (raw[i + 1]) variants(raw[i] + raw[i + 1]);
+      if (raw[i + 1] && /^[.\-]/.test(raw[i + 1]) === false && /[.\-]$/.test(raw[i]) === false) variants(raw[i] + '.' + raw[i + 1]);
+    }
+    return out;
+  }
+  /* index: object mapping UPPERCASE item number -> item number as written. Returns up to `limit` item numbers, best first. */
+  function match(text, index, itemsUpper, limit) {
+    limit = limit || 6;
+    var toks = tokens(text), found = [], seen = {};
+    function take(key, score) { if (!seen[key]) { seen[key] = true; found.push({ item: index[key], score: score + key.length / 100 }); } }
+    for (var i = 0; i < toks.length; i++) if (index[toks[i]] !== undefined) take(toks[i], 2);
+    if (!found.length && itemsUpper) {
+      for (var t = 0; t < toks.length; t++) {
+        var tok = toks[t];
+        if (tok.length < 7 || (tok.match(/\d/g) || []).length < 4) continue;      /* short plain numbers are too dense to guess */
+        for (var k = 0; k < itemsUpper.length; k++) {
+          var it = itemsUpper[k];
+          if (Math.abs(it.length - tok.length) <= 1 && it.charCodeAt(0) === tok.charCodeAt(0) && editDistanceAtMost1(it, tok)) take(it, 1);
         }
       }
-      if (!number) { var m = /([A-Z]{1,4}\d{6,})/.exec(fileName || ''); number = m ? m[1] : ''; }
-      if (!number) throw new Error('No quotation number (such as EQ26000040) was found above the column titles or in the file name.');
-      var items = [], warnings = [];
-      for (var i = head.row + 1; i < rows.length; i++) {
-        var line = rows[i] || [];
-        var rawItem = line[head.cols.item], item = cellText(rawItem);
-        if (!item) continue;
-        if (typeof rawItem === 'number' && rawItem !== Math.floor(rawItem)) warnings.push('Row ' + (i + 1) + ': item number ' + item + ' is stored as a number, so a final zero may be missing.');
-        var rawEan = line[head.cols.ean], ean = cleanEan(rawEan);
-        if (!ean && cellText(rawEan).replace(/\D/g, '')) warnings.push('Row ' + (i + 1) + ': “' + cellText(rawEan) + '” in the EAN column is not a valid EAN and was ignored.');
-        items.push({ row: i + 1, item: item, name: head.cols.name === undefined ? '' : cellText(line[head.cols.name]), ean: ean });
-      }
-      if (!items.length) throw new Error('The sheet “' + name + '” has the column titles but no item rows under them.');
-      var cols = {}; Object.keys(head.cols).forEach(function (k) { cols[k] = colLetter(head.cols[k]); });
-      return { number: number, customer: customer, file: fileName || '', sheet: name, headerRow: head.row + 1, cols: cols, items: items, warnings: warnings };
     }
-    throw new Error('This file has no “Item number” column, so it isn’t a quotation in the offer layout.');
+    found.sort(function (a, b) { return b.score - a.score; });
+    if (found.length && found[0].score < 2) limit = Math.min(limit, 3);     /* near-misses only: keep the list short */
+    return found.slice(0, limit).map(function (f) { return f.item; });
   }
-
-  function read(file) {
-    return library().then(function (XLSX) {
-      return new Promise(function (resolve, reject) {
-        var fr = new FileReader();
-        fr.onerror = function () { reject(new Error('The file could not be opened. Choose it again.')); };
-        fr.onload = function () { try { resolve(parse(XLSX, fr.result, file.name)); } catch (e) { reject(e); } };
-        fr.readAsArrayBuffer(file);
-      });
-    });
+  /* Makes print stand out for the text reader: every pixel is compared with the average of its neighbourhood,
+     so uneven light, coloured packaging and white stickers on grey all come out as dark text on white.
+     invert = true is for light print on a dark surface. Returns a new canvas. */
+  function prep(canvas, invert) {
+    var w = canvas.width, h = canvas.height;
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+    var px = ctx.getImageData(0, 0, w, h).data;
+    var gray = new Uint8Array(w * h), sum = new Float64Array((w + 1) * (h + 1));
+    for (var y = 0; y < h; y++) {
+      var rowSum = 0;
+      for (var x = 0; x < w; x++) {
+        var i = (y * w + x) * 4, g = (px[i] * 77 + px[i + 1] * 150 + px[i + 2] * 29) >> 8;
+        if (invert) g = 255 - g;
+        gray[y * w + x] = g; rowSum += g;
+        sum[(y + 1) * (w + 1) + x + 1] = sum[y * (w + 1) + x + 1] + rowSum;
+      }
+    }
+    var r = Math.max(15, Math.round(h / 8)), out = document.createElement('canvas'); out.width = w; out.height = h;
+    var octx = out.getContext('2d'), img = octx.createImageData(w, h), o = img.data;
+    for (var yy = 0; yy < h; yy++) {
+      var y0 = Math.max(0, yy - r), y1 = Math.min(h, yy + r + 1);
+      for (var xx = 0; xx < w; xx++) {
+        var x0 = Math.max(0, xx - r), x1 = Math.min(w, xx + r + 1);
+        var mean = (sum[y1 * (w + 1) + x1] - sum[y0 * (w + 1) + x1] - sum[y1 * (w + 1) + x0] + sum[y0 * (w + 1) + x0]) / ((y1 - y0) * (x1 - x0));
+        var v = gray[yy * w + xx] < mean * 0.8 - 6 ? 0 : 255, k = (yy * w + xx) * 4;
+        o[k] = o[k + 1] = o[k + 2] = v; o[k + 3] = 255;
+      }
+    }
+    octx.putImageData(img, 0, 0);
+    return out;
   }
-  return { read: read, parse: parse };
+  return { match: match, tokens: tokens, prep: prep };
 })();
 
 /* ===== App ===== */
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
-  var BARS = '<svg width="18" height="12" viewBox="0 0 18 12" aria-hidden="true"><g fill="currentColor"><rect x="0" width="2" height="12"/><rect x="3" width="1" height="12"/><rect x="5" width="2" height="12"/><rect x="9" width="1" height="12"/><rect x="11" width="3" height="12"/><rect x="15" width="1" height="12"/><rect x="17" width="1" height="12"/></g></svg>';
   var CONNECTED = /^https?:\/\/\S+$/.test(String(API_URL || '').trim());
+  var OCR = {
+    script: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+    worker: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+    core: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1',
+    lang: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int'
+  };
 
   var S = {
     code: '', name: '',
     status: 'gate',               // unconfigured | gate | loading | ready | error
     problem: '',
-    quotes: [], qid: null, quote: null, index: {},
-    marks: {}, extras: {},
-    filter: 'all', query: '',
+    quotes: [], qid: null, quote: null, lines: [],
     sheet: null, saving: false,
-    seq: 0, syncedAt: 0, offline: false, eanList: null,
+    seq: 0, syncedAt: 0, offline: false,
+    cat: { at: '', items: [], byEan: {}, byItem: {}, upper: [], state: 'none' },   // none | loading | ready | empty | failed
+    photos: {},                   // photo id -> data URL, kept while the page is open
     scan: { open: false, stream: null, live: false, paused: false, timer: null, last: null, cool: null, coolUntil: 0, starting: false, why: '' }
   };
 
@@ -574,8 +568,8 @@ var QuoteFile = (function () {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
-  function remarkText(m) {
-    var q = (m.qty || '').trim(), n = (m.note || '').trim();
+  function remarkText(l) {
+    var q = (l.qty || '').trim(), n = (l.note || '').trim();
     if (q && n) return 'Qty ' + q + ' – ' + n;
     return q ? 'Qty ' + q : n;
   }
@@ -588,13 +582,15 @@ var QuoteFile = (function () {
   function recall(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
   function forget(k) { try { localStorage.removeItem(k); } catch (e) { /* nothing to remove */ } }
   function clock(ms) { return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+  function newId() { return 'ln_' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-6); }
+  function today6() { var d = new Date(); return String(d.getFullYear()).slice(2) + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2); }
 
   /* ---------- storage (Google Sheet behind the web app URL) ---------- */
-  function api(action, extra) {
+  function api(action, extra, timeoutMs) {
     var body = { code: S.code, action: action };
     Object.keys(extra || {}).forEach(function (k) { body[k] = extra[k]; });
     var ctl = ('AbortController' in window) ? new AbortController() : null;
-    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 25000);
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, timeoutMs || 30000);
     /* text/plain keeps this a "simple" request, which is what the Google web app accepts from another site */
     return fetch(String(API_URL).trim(), {
       method: 'POST', redirect: 'follow',
@@ -617,61 +613,133 @@ var QuoteFile = (function () {
     if (c === 'bad_code') return 'That access code isn’t right. Ask for the current one.';
     if (c === 'not_set_up') return 'The storage has no access code yet. In the Sheet, use Scan tool > 2. Set the team access code.';
     if (c === 'busy') return 'Someone else is saving at this moment. Save again.';
-    if (c === 'not_found') return 'That item or quotation is no longer in the Sheet. Refresh the list.';
-    if (c === 'empty_remark') return 'Add a quantity or a note.';
+    if (c === 'not_found') return 'That line or quotation is no longer in the Sheet. Refresh the list.';
+    if (c === 'photo_too_big') return 'That photo is too large to save.';
+    if (c === 'too_many_photos') return 'A line can hold 8 photos. Remove one first.';
     if (c === 'bad_request') return 'The storage did not accept this. Update the Sheet’s script to the latest version and try again.';
-    if (c === 'server_error') return 'The Sheet reported a problem: ' + (e.detail || 'unknown') + '';
+    if (c === 'server_error') return 'The Sheet reported a problem: ' + (e.detail || 'unknown');
     if (c === 'network') return 'No connection to the storage. Check the signal and try again.';
     return 'The storage gave an answer the page couldn’t read (' + (c || 'unknown') + (e && e.detail ? ' ' + e.detail : '') + ').';
   }
 
-  /* ---------- data ---------- */
-  function buildIndex() {
-    S.index = {};
-    if (!S.quote) return;
-    S.quote.items.forEach(function (it) {
-      var k = Decoder.gtinKey(it.ean);
-      if (k) (S.index[k] = S.index[k] || []).push(it);
+  /* ---------- a small key-value store on the phone, for the item list ---------- */
+  function idb() {
+    return new Promise(function (resolve, reject) {
+      if (!window.indexedDB) { reject(new Error('no indexedDB')); return; }
+      var rq = indexedDB.open('showroom-scan', 1);
+      rq.onupgradeneeded = function () { rq.result.createObjectStore('kv'); };
+      rq.onsuccess = function () { resolve(rq.result); };
+      rq.onerror = function () { reject(rq.error); };
     });
   }
-  function isKnownCode(code) { return !!S.index[Decoder.gtinKey(code)]; }
-  function itemByRow(row) {
-    if (!S.quote) return null;
-    for (var i = 0; i < S.quote.items.length; i++) if (S.quote.items[i].row === row) return S.quote.items[i];
-    return null;
+  function idbGet(key) {
+    return idb().then(function (db) {
+      return new Promise(function (resolve) {
+        var rq = db.transaction('kv').objectStore('kv').get(key);
+        rq.onsuccess = function () { resolve(rq.result || null); };
+        rq.onerror = function () { resolve(null); };
+      });
+    }).catch(function () { return null; });
   }
+  function idbSet(key, value) {
+    return idb().then(function (db) {
+      return new Promise(function (resolve) {
+        var tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(value, key);
+        tx.oncomplete = function () { resolve(true); }; tx.onerror = function () { resolve(false); }; tx.onabort = function () { resolve(false); };
+      });
+    }).catch(function () { return false; });
+  }
+
+  /* ---------- item list (kept on the phone so lookups are instant) ---------- */
+  function useCatalog(items, at) {
+    var byEan = {}, byItem = {}, upper = new Array(items.length);
+    for (var i = 0; i < items.length; i++) {
+      var u = String(items[i][0]).toUpperCase(); upper[i] = u; byItem[u] = i;
+      if (items[i][1]) { var k = Decoder.gtinKey(items[i][1]); if (k) (byEan[k] = byEan[k] || []).push(i); }
+    }
+    S.cat = { at: at, items: items, byEan: byEan, byItem: byItem, upper: upper, state: items.length ? 'ready' : 'empty' };
+  }
+  function itemAt(i) { var r = S.cat.items[i]; return { item: r[0], ean: r[1] || '', name: r[2] || '' }; }
+  function itemsForEan(code) { return (S.cat.byEan[Decoder.gtinKey(code)] || []).map(itemAt); }
+  function isKnownCode(code) { return !!S.cat.byEan[Decoder.gtinKey(code)]; }
+  function itemByNumber(no) { var i = S.cat.byItem[String(no).toUpperCase()]; return i === undefined ? null : itemAt(i); }
+
+  /* called with what the storage says about its item list: {count, at} or null */
+  function syncCatalog(info) {
+    if (!info) { if (S.cat.state !== 'ready') { S.cat.state = 'empty'; render(); } return; }
+    if (S.cat.state === 'loading' || (S.cat.state === 'ready' && S.cat.at === info.at)) return;
+    var had = S.cat.state === 'ready';
+    if (!had) S.cat.state = 'loading';
+    render();
+    (had ? Promise.resolve(null) : idbGet('catalog')).then(function (saved) {
+      if (saved && saved.at === info.at && saved.items && saved.items.length) { useCatalog(saved.items, saved.at); render(); return; }
+      return api('catalog_get', {}, 120000).then(function (j) {
+        useCatalog(j.items || [], j.at || info.at); render();
+        idbSet('catalog', { at: S.cat.at, items: S.cat.items });
+      });
+    }).catch(function () { if (!had) { S.cat.state = 'failed'; render(); } });
+  }
+
+  function searchItems(query, limit) {
+    var q = String(query || '').trim().toUpperCase();
+    if (q.length < 2) return [];
+    var words = q.split(/\s+/), starts = [], inNo = [], inName = [], items = S.cat.items, upper = S.cat.upper;
+    for (var i = 0; i < items.length && starts.length < limit; i++) {
+      var u = upper[i], at = u.indexOf(q);
+      if (at === 0) { starts.push(i); continue; }
+      if (at > 0) { if (inNo.length < limit) inNo.push(i); continue; }
+      if (inName.length < limit) {
+        var name = String(items[i][2] || '').toUpperCase(), all = true;
+        for (var w = 0; w < words.length; w++) if (name.indexOf(words[w]) < 0) { all = false; break; }
+        if (all) inName.push(i);
+      }
+    }
+    starts.sort(function (a, b) { return upper[a].length - upper[b].length || (upper[a] < upper[b] ? -1 : 1); });
+    return starts.concat(inNo, inName).slice(0, limit).map(itemAt);
+  }
+  /* other items that share the part before the first dot, e.g. 30195 -> 30195.SN, 30195.SN1 ... */
+  function siblings(itemNo, limit) {
+    var base = String(itemNo).toUpperCase().split('.')[0], out = [];
+    if (base.length < 4) return out;
+    for (var i = 0; i < S.cat.upper.length && out.length < limit; i++) {
+      var u = S.cat.upper[i];
+      if (u !== String(itemNo).toUpperCase() && (u === base || u.indexOf(base + '.') === 0)) out.push(itemAt(i));
+    }
+    return out;
+  }
+
+  /* ---------- data ---------- */
+  function lineById(id) { for (var i = 0; i < S.lines.length; i++) if (S.lines[i].id === id) return S.lines[i]; return null; }
+  function lineForItem(no) { for (var i = 0; i < S.lines.length; i++) if (S.lines[i].type === 'item' && S.lines[i].item.toUpperCase() === String(no).toUpperCase()) return S.lines[i]; return null; }
   function applyOpen(j) {
-    S.quote = { id: j.quotation.id, number: j.quotation.id, customer: j.quotation.customer || '', items: j.quotation.items || [] };
-    S.qid = S.quote.id;
-    S.marks = j.marks || {}; S.extras = j.extras || {};
+    S.quote = j.quotation; S.qid = j.quotation.id; S.lines = j.lines || [];
     S.syncedAt = Date.now(); S.offline = false; S.status = 'ready'; S.problem = '';
-    buildIndex();
   }
   function fail(e) {
     if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
-    if (S.quote) { S.offline = true; render(); return; }      /* keep showing what was loaded */
+    if (S.quote || S.quotes.length) { S.offline = true; render(); return; }       /* keep showing what was loaded */
     S.status = 'error'; S.problem = problemText(e); render();
   }
 
   /* first load, quotation switch and the Refresh button */
   function loadAll(wantQid) {
     var seq = ++S.seq;
-    if (!S.quote) { S.status = 'loading'; render(); }
+    if (!S.quote && !S.quotes.length) { S.status = 'loading'; render(); }
     return api('list').then(function (j) {
       if (seq !== S.seq) return;
       S.quotes = j.quotations || [];
-      S.eanList = j.eanList || null;
+      syncCatalog(j.catalog || null);
       var pick = null, want = wantQid || S.qid || recall('scan.qid');
       S.quotes.forEach(function (q) { if (q.id === want) pick = q.id; });
-      if (!pick && S.quotes.length) pick = S.quotes[0].id;
-      if (!pick) { S.quote = null; S.qid = null; S.marks = {}; S.extras = {}; buildIndex(); S.status = 'ready'; S.offline = false; render(); return; }
+      if (!pick && S.quotes.length && !wantQid) pick = S.quotes[0].id;
+      if (!pick) { S.quote = null; S.qid = null; S.lines = []; S.status = 'ready'; S.offline = false; render(); return; }
       return api('open', { quotation: pick }).then(function (o) {
         if (seq !== S.seq) return;
         applyOpen(o); remember('scan.qid', pick); render();
       });
     }).catch(function (e) { if (seq === S.seq) fail(e); });
   }
-  /* quiet background refresh of the open quotation's remarks */
+  /* quiet background refresh of the open quotation's lines */
   function refreshQuiet() {
     if (S.status !== 'ready' || !S.quote || S.saving || document.hidden) return;
     var seq = S.seq;
@@ -684,7 +752,7 @@ var QuoteFile = (function () {
   /* ---------- access code ---------- */
   function showGate(msg) {
     S.status = 'gate'; S.code = ''; forget('scan.code');
-    S.quote = null; S.quotes = []; S.marks = {}; S.extras = {}; buildIndex();
+    S.quote = null; S.quotes = []; S.lines = [];
     if (S.scan.open) closeScan();
     S.sheet = null; $('veil').hidden = true;
     $('gName').value = S.name || recall('scan.name');
@@ -697,7 +765,7 @@ var QuoteFile = (function () {
   function submitGate() {
     var code = $('gCode').value.trim(), name = $('gName').value.trim();
     if (!code) { $('gMsg').textContent = 'Type the team access code.'; return; }
-    if (!name) { $('gMsg').textContent = 'Type your name, so colleagues see who saved a remark.'; return; }
+    if (!name) { $('gMsg').textContent = 'Type your name, so colleagues see who added a line.'; return; }
     $('gGo').disabled = true; $('gMsg').textContent = 'Checking…';
     S.code = code; S.name = name;
     api('list').then(function () {
@@ -711,160 +779,138 @@ var QuoteFile = (function () {
   }
 
   /* ---------- rendering ---------- */
-  function matches(it) {
-    if (S.filter === 'marked' && !S.marks['r' + it.row]) return false;
-    var q = S.query.trim().toLowerCase();
-    if (!q) return true;
-    if (String(it.item).toLowerCase().indexOf(q) >= 0) return true;
-    if (String(it.name).toLowerCase().indexOf(q) >= 0) return true;
-    var d = q.replace(/\D/g, '');
-    return d.length >= 4 && d.length === q.replace(/\s/g, '').length && String(it.ean).indexOf(d) >= 0;
+  function catalogLine() {
+    var c = S.cat;
+    if (c.state === 'loading') return 'Downloading the item list. Scanning works as soon as it is here.';
+    if (c.state === 'failed') return 'The item list could not be downloaded. Tap Refresh to try again.';
+    if (c.state === 'empty') return 'The storage has no item list yet, so items cannot be looked up. New items with photos still work.';
+    return '';
   }
-
-  /* when the office PC last refreshed the EAN list; shown so a stale list gets noticed */
-  function eanListLine() {
-    var e = S.eanList; if (!e || !e.at) return '';
-    var when = new Date(e.at); if (isNaN(when.getTime())) return '';
-    var days = (Date.now() - when.getTime()) / 86400000;
-    return '<div class="foot">EAN list: ' + Number(e.count || 0).toLocaleString() + ' items, refreshed ' +
-      when.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + '.' +
-      (days >= 3 ? ' <b>That is ' + Math.floor(days) + ' days ago.</b>' : '') + '</div>';
-  }
-
-  function rowHtml(it) {
-    var m = S.marks['r' + it.row];
-    var side = it.ean ? BARS + '<span>' + esc(it.ean) + '</span>' : '<span>No barcode</span>';
-    return '<button class="row' + (m ? ' is-marked' : '') + '" data-act="open-item" data-row="' + it.row + '">' +
-      '<span class="row-no">' + esc(it.item) + '</span>' +
-      '<span class="row-side">' + side + '</span>' +
-      '<span class="row-name">' + esc(it.name) + '</span>' +
-      (m ? '<span class="row-remark">' + esc(remarkText(m)) + '</span>' : '') +
+  function rowHtml(l) {
+    var isNew = l.type === 'new';
+    var side = isNew ? (l.photos.length ? l.photos.length + (l.photos.length === 1 ? ' photo' : ' photos') : 'No photo') : (l.ean ? esc(l.ean) : 'No barcode');
+    var text = remarkText(l);
+    return '<button class="row is-marked' + (isNew ? ' is-extra' : '') + '" data-act="open-line" data-id="' + esc(l.id) + '">' +
+      '<span class="row-no">' + (isNew ? 'New item' : esc(l.item)) + '</span>' +
+      '<span class="row-side"><span>' + side + '</span></span>' +
+      (isNew ? '' : '<span class="row-name">' + esc(l.name) + '</span>') +
+      (text ? '<span class="row-remark">' + esc(text) + '</span>' : '') +
       '</button>';
   }
-
   function render() {
     var sel = $('quoteSel'), q = S.quote;
     var canAdd = CONNECTED && S.status === 'ready';
     sel.innerHTML = (S.quotes.length
-      ? S.quotes.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === S.qid ? ' selected' : '') + '>' + esc(x.id) + '</option>'; }).join('')
-      : '<option value="">Showroom scan</option>') + (canAdd ? '<option value="__add__">Add a quotation…</option>' : '');
+      ? (q ? '' : '<option value="">Choose a quotation</option>') + S.quotes.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === S.qid ? ' selected' : '') + '>' + esc(x.customer) + '</option>'; }).join('')
+      : '<option value="">Showroom scan</option>') + (canAdd ? '<option value="__new__">New quotation…</option>' : '');
     sel.disabled = !canAdd;
-    $('customer').textContent = q ? q.customer : '';
-    var markedCount = q ? q.items.filter(function (it) { return S.marks['r' + it.row]; }).length : 0;
-    $('progress').innerHTML = q ? '<b>' + markedCount + '</b> of ' + q.items.length + ' marked' : '';
-    $('tools').hidden = !q;
+    $('customer').textContent = q ? q.id + (q.by ? ', started by ' + q.by : '') : '';
+    $('progress').innerHTML = q ? '<b>' + S.lines.length + '</b> ' + (S.lines.length === 1 ? 'line' : 'lines') : '';
     $('refreshBtn').hidden = !(S.status === 'ready' || S.status === 'error') || !CONNECTED;
-    Array.prototype.forEach.call(document.querySelectorAll('[data-act="filter"]'), function (b) {
-      b.setAttribute('aria-pressed', String(b.getAttribute('data-v') === S.filter));
-    });
-    var n = $('notice');
-    n.textContent = (q && S.offline) ? 'No connection to the storage. Showing the list as it was at ' + clock(S.syncedAt) + '; remarks can’t be saved until the signal is back.' : '';
-    n.hidden = !n.textContent;
+    $('dock').hidden = !q;
+    var notes = [];
+    if (S.offline) notes.push('No connection to the storage. Showing what was loaded at ' + clock(S.syncedAt) + '; nothing can be saved until the signal is back.');
+    if (S.status === 'ready' && catalogLine()) notes.push(catalogLine());
+    var n = $('notice'); n.textContent = notes.join(' '); n.hidden = !notes.length;
 
     var list = $('list');
     if (!q) {
       var msg = {
-        unconfigured: '<b>This copy isn’t connected yet</b>Paste the web app URL into the API_URL line at the top of the file and upload it again. The scanner can still be tested with the button below.',
+        unconfigured: '<b>This copy isn’t connected yet</b>Paste the web app URL into the API_URL line at the top of the file and upload it again.',
         gate: '',
-        loading: '<b>Loading quotations…</b>',
+        loading: '<b>Loading…</b>',
         error: '<b>The quotations can’t be loaded</b>' + esc(S.problem) + '<br><br><button class="btn" data-act="refresh">Try again</button>',
-        ready: '<b>No quotation on the phones yet</b>Add one from its quotation file.<br><br><button class="btn primary" data-act="add-quote">Add a quotation</button>'
+        ready: '<b>' + (S.quotes.length ? 'No quotation is open' : 'No quotation yet') + '</b>Start one when a customer arrives.<br><br><button class="btn primary" data-act="new-quote">New quotation</button>'
       }[S.status];
       list.innerHTML = msg ? '<div class="state">' + msg + '</div>' : '';
       return;
     }
-    var rows = q.items.filter(matches);
-    var html = rows.map(rowHtml).join('');
-    if (!rows.length) {
-      html = '<div class="state">' + (S.query.trim()
-        ? '<b>No item matches “' + esc(S.query.trim()) + '”</b>Try part of the item number or name.'
-        : '<b>Nothing marked yet</b>Scan a barcode or tap an item to add a remark.') + '</div>';
-    }
-    var extraKeys = Object.keys(S.extras).sort();
-    if (extraKeys.length && !S.query.trim()) {
-      html += '<div class="section-h">Not in this quotation</div>' + extraKeys.map(function (k) {
-        var x = S.extras[k];
-        return '<button class="row is-extra" data-act="open-extra" data-code="' + esc(x.code) + '">' +
-          '<span class="row-no">' + esc(x.code) + '</span><span class="row-side">' + BARS + '</span>' +
-          '<span class="row-remark">' + esc(remarkText(x)) + '</span></button>';
-      }).join('');
-    }
-    html += '<div class="foot"><button class="text-btn" data-act="add-quote">Add a quotation</button></div>' + eanListLine() +
-      '<div class="foot">Saving as <b>' + esc(S.name) + '</b>. <button class="text-btn" data-act="signout">Change name or code</button></div>';
+    var html = S.lines.map(rowHtml).join('');
+    if (!S.lines.length) html = '<div class="state"><b>No lines yet</b>Scan a barcode, read a printed item number, find an item by typing, or add a new item with photos.</div>';
+    html += '<div class="foot"><button class="text-btn" data-act="new-quote">New quotation</button></div>' +
+      '<div class="foot">' + (S.cat.state === 'ready' ? 'Item list: ' + S.cat.items.length.toLocaleString() + ' items' + (S.cat.at ? ', refreshed ' + new Date(S.cat.at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '') + '. ' : '') +
+      'Saving as <b>' + esc(S.name) + '</b>. <button class="text-btn" data-act="signout">Change name or code</button></div>';
     list.innerHTML = html;
   }
 
   /* ---------- sheets ---------- */
-  var VIA = { camera: 'Read with the live camera', photo: 'Read from a photo', typed: 'Typed in' };
+  var VIA = { camera: 'Read with the live camera', photo: 'Read from a photo', typed: 'Barcode typed in', text: 'Item number read from a photo', find: 'Found by typing' };
 
-  function formHtml(m, saveLabel, removeLabel) {
-    return '<label class="field"><span>Quantity</span><input id="fQty" inputmode="numeric" autocomplete="off" maxlength="40" value="' + esc(m ? m.qty : '') + '"></label>' +
-      '<label class="field"><span>Note</span><textarea id="fNote" rows="2" maxlength="500">' + esc(m ? m.note : '') + '</textarea></label>' +
-      '<p class="form-msg" id="fMsg" role="alert"></p>' +
-      '<div class="sheet-actions">' +
-      '<button class="btn primary" data-act="save">' + saveLabel + '</button>' +
-      '<button class="btn" data-act="sheet-close">' + (S.scan.open ? 'Scan again' : 'Cancel') + '</button>' +
-      (m ? '<button class="btn danger" data-act="remove">' + removeLabel + '</button>' : '') +
-      '</div>';
+  function pickHtml(items) {
+    return items.map(function (it) {
+      var has = lineForItem(it.item);
+      return '<button class="pick" data-act="pick-item" data-item="' + esc(it.item) + '"><b>' + esc(it.item) + (has ? ' <span class="tag">in this quotation</span>' : '') + '</b><span>' + esc(it.name) + '</span></button>';
+    }).join('');
+  }
+  function photoStripHtml(sh) {
+    var html = '<div class="photos" id="photoStrip">';
+    (sh.photos || []).forEach(function (id) {
+      html += '<span class="ph"><img alt="" data-photo="' + esc(id) + '"' + (S.photos[id] ? ' src="' + S.photos[id] + '"' : '') + '><button class="ph-x" data-act="photo-del" data-photo="' + esc(id) + '" aria-label="Remove this photo">×</button></span>';
+    });
+    (sh.pending || []).forEach(function (p, i) {
+      html += '<span class="ph is-new"><img alt="" src="' + p.url + '"><button class="ph-x" data-act="photo-drop" data-i="' + i + '" aria-label="Remove this photo">×</button></span>';
+    });
+    return html + '<label class="ph ph-add" for="newPhotoIn">Add photo</label></div>';
   }
 
   function openSheet(sh) {
     S.sheet = sh;
-    var el = $('sheet'), html = '';
+    var el = $('sheet'), html = '', back = S.scan.open ? 'Scan again' : 'Cancel';
     el.classList.remove('is-busy');
-    if (sh.type === 'item') {
-      var it = itemByRow(sh.row), m = S.marks['r' + sh.row];
-      var meta = it.ean ? 'EAN ' + esc(it.ean) + (it.src === 'master' ? ', filled in from the master list' : '') : 'No barcode on this item';
-      if (VIA[sh.via]) meta += '. ' + VIA[sh.via];
-      meta += '.';
-      if (m && m.by) meta += ' Last saved by ' + esc(m.by) + '.';
-      html = '<div class="sheet-no">' + esc(it.item) + '</div><div class="sheet-name">' + esc(it.name) + '</div>' +
-        '<div class="sheet-meta">' + meta + '</div>' + formHtml(m, 'Save remark', 'Remove remark');
+    if (sh.type === 'line') {
+      var l = sh.id ? lineById(sh.id) : null, it = sh.item || { item: l.item, ean: l.ean, name: l.name };
+      var meta = (it.ean ? 'EAN ' + esc(it.ean) : 'No barcode in the item list') + '.';
+      if (VIA[sh.via]) meta += ' ' + VIA[sh.via] + '.';
+      if (l) meta += ' Already in this quotation' + (l.updatedBy ? ', last saved by ' + esc(l.updatedBy) : '') + '.';
+      html = '<div class="sheet-no">' + esc(it.item) + '</div><div class="sheet-name">' + esc(it.name) + '</div><div class="sheet-meta">' + meta + '</div>' +
+        '<label class="field"><span>Quantity</span><input id="fQty" inputmode="numeric" autocomplete="off" maxlength="40" value="' + esc(l ? l.qty : '') + '"></label>' +
+        '<label class="field"><span>Note</span><textarea id="fNote" rows="2" maxlength="1000">' + esc(l ? l.note : '') + '</textarea></label>' +
+        '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
+        '<button class="btn primary" data-act="save-line">' + (l ? 'Save changes' : 'Add to quotation') + '</button>' +
+        '<button class="btn" data-act="sheet-close">' + back + '</button>' +
+        (l ? '<button class="btn danger" data-act="remove-line">Remove line</button>' : '') + '</div>';
+    } else if (sh.type === 'newitem') {
+      var n = sh.id ? lineById(sh.id) : null;
+      if (n && sh.photos === undefined) { sh.photos = n.photos.slice(); }
+      if (sh.pending === undefined) sh.pending = [];
+      html = '<div class="sheet-no">New item</div><div class="sheet-meta">For something that is not in the item list' + (sh.ean ? ' (barcode ' + esc(sh.ean) + ')' : '') + '. Add photos and describe what the customer wants.</div>' +
+        photoStripHtml(sh) +
+        '<label class="field"><span>Description</span><textarea id="fNote" rows="3" maxlength="1000">' + esc(sh.note !== undefined ? sh.note : (n ? n.note : '')) + '</textarea></label>' +
+        '<label class="field"><span>Quantity</span><input id="fQty" inputmode="numeric" autocomplete="off" maxlength="40" value="' + esc(sh.qty !== undefined ? sh.qty : (n ? n.qty : '')) + '"></label>' +
+        '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
+        '<button class="btn primary" data-act="save-new">' + (n ? 'Save changes' : 'Add to quotation') + '</button>' +
+        '<button class="btn" data-act="sheet-close">' + back + '</button>' +
+        (n ? '<button class="btn danger" data-act="remove-line">Remove line</button>' : '') + '</div>';
     } else if (sh.type === 'pick') {
-      html = '<div class="sheet-no">' + esc(sh.code) + '</div><div class="sheet-meta">' + sh.rows.length + ' items in this quotation share this barcode. Choose the one in hand.</div>' +
-        sh.rows.map(function (r) {
-          var it = itemByRow(r);
-          return '<button class="pick" data-act="pick" data-row="' + r + '"><b>' + esc(it.item) + '</b><span>' + esc(it.name) + '</span></button>';
-        }).join('') +
-        '<div class="sheet-actions"><button class="btn" data-act="sheet-close">' + (S.scan.open ? 'Scan again' : 'Cancel') + '</button></div>';
-    } else if (sh.type === 'extra') {
-      var x = S.extras['x' + Decoder.gtinKey(sh.code)];
-      html = '<div class="sheet-no">' + esc(sh.code) + '</div><div class="sheet-name">Not in this quotation</div>' +
-        '<div class="sheet-meta warn">' + (sh.sure === false
-          ? 'This read could not be confirmed. Scan again before noting it.'
-          : (VIA[sh.via] ? VIA[sh.via] + '. ' : '') + 'Save it as an extra item, or find the right item by name.') +
-        (x && x.by ? ' Last saved by ' + esc(x.by) + '.' : '') + '</div>' +
-        formHtml(x, 'Save extra item', 'Remove extra item') +
-        '<div class="sheet-actions"><button class="btn" data-act="find-instead">Find the item by name or number</button></div>';
-    } else if (sh.type === 'add') {
-      html = '<div class="sheet-no">Add a quotation</div>' +
-        '<div class="sheet-meta">Choose the quotation file as it was exported (.xls or .xlsx). Its items then appear on every phone.</div>' +
-        '<p class="form-msg" id="fMsg" role="alert">' + esc(sh.msg || '') + '</p>' +
-        '<div class="sheet-actions"><label class="btn primary" for="quoteIn">Choose the file</label><button class="btn" data-act="sheet-close">Cancel</button></div>';
-    } else if (sh.type === 'add-confirm') {
-      var q = sh.q, withEan = q.items.filter(function (i) { return i.ean; }).length;
-      html = '<div class="sheet-no">' + esc(q.number) + '</div><div class="sheet-name">' + esc(q.customer || 'No customer name found in the file') + '</div>' +
-        '<div class="sheet-meta">' + q.items.length + ' items in ' + esc(q.file) + '. ' + withEan + ' have an EAN in the file; the others are filled in from the EAN list where it has them.</div>' +
-        (sh.replace ? '<div class="sheet-meta warn">' + esc(q.number) + ' is already on the phones' + (sh.had ? ' with ' + sh.had : '') + '. Replacing it swaps in this file’s item list; remarks follow their items.</div>' : '') +
-        (q.warnings.length ? '<ul class="sheet-list">' + q.warnings.slice(0, 6).map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul>' : '') +
-        '<p class="form-msg" id="fMsg" role="alert"></p>' +
-        '<div class="sheet-actions"><button class="btn primary" data-act="add-go">' + (sh.replace ? 'Replace it on the phones' : 'Put it on the phones') + '</button>' +
-        '<button class="btn" data-act="sheet-close">Cancel</button></div>';
+      html = '<div class="sheet-no">' + esc(sh.title) + '</div><div class="sheet-meta">' + esc(sh.text) + '</div>' + pickHtml(sh.items) +
+        (sh.more && sh.more.length ? '<div class="sheet-meta">Others that start the same way</div>' + pickHtml(sh.more) : '') +
+        '<div class="sheet-actions"><button class="btn" data-act="find">Find by typing</button><button class="btn" data-act="sheet-close">' + back + '</button></div>';
+    } else if (sh.type === 'find') {
+      html = '<div class="sheet-no">Find an item</div>' +
+        '<label class="field"><span>Item number or words from the name</span><input id="findIn" autocomplete="off" autocapitalize="characters" spellcheck="false" value="' + esc(sh.q || '') + '"></label>' +
+        '<div id="findOut"></div>' +
+        '<div class="sheet-actions"><button class="btn" data-act="new-item">It is a new item</button><button class="btn" data-act="sheet-close">' + back + '</button></div>';
+    } else if (sh.type === 'notfound') {
+      html = '<div class="sheet-no">' + esc(sh.title) + '</div><div class="sheet-meta warn">' + esc(sh.text) + '</div>' +
+        '<div class="sheet-actions"><button class="btn primary" data-act="find">Find by typing</button>' +
+        '<button class="btn" data-act="new-item">Add as a new item</button><button class="btn" data-act="sheet-close">' + back + '</button></div>';
+    } else if (sh.type === 'newquote') {
+      html = '<div class="sheet-no">New quotation</div><div class="sheet-meta">It starts empty. Lines are added by scanning.</div>' +
+        '<label class="field"><span>Customer</span><input id="fCustomer" autocomplete="off" maxlength="120"></label>' +
+        '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
+        '<button class="btn primary" data-act="create-quote">Start quotation</button><button class="btn" data-act="sheet-close">Cancel</button></div>';
     } else if (sh.type === 'info') {
       html = '<div class="sheet-no">' + esc(sh.title) + '</div><div class="sheet-meta">' + esc(sh.text) + '</div>' +
         '<div class="sheet-actions"><button class="btn primary" data-act="sheet-close">OK</button></div>';
-    } else if (sh.type === 'read') {
-      html = '<div class="sheet-no">' + esc(sh.code) + '</div><div class="sheet-name">Barcode read</div>' +
-        '<div class="sheet-meta">' + (VIA[sh.via] || '') + '. No quotation is open, so there is nothing to match it against.</div>' +
-        '<div class="sheet-actions"><button class="btn primary" data-act="sheet-close">' + (S.scan.open ? 'Scan again' : 'Close') + '</button></div>';
     }
     el.innerHTML = html;
     $('veil').hidden = false;
     el.scrollTop = 0;
-    var qty = $('fQty');
-    if (qty && sh.type === 'item' && !S.marks['r' + sh.row]) { try { qty.focus({ preventScroll: true }); } catch (e) { qty.focus(); } }
+    var focus = sh.type === 'find' ? $('findIn') : sh.type === 'newquote' ? $('fCustomer') : (sh.type === 'line' && !sh.id) ? $('fQty') : null;
+    if (focus) { try { focus.focus({ preventScroll: true }); } catch (e) { focus.focus(); } }
+    if (sh.type === 'find') renderFind();
+    if (sh.type === 'newitem') loadPhotos(sh.photos || []);
   }
-
   function closeSheet() {
     var sh = S.sheet;
     S.sheet = null; S.saving = false;
@@ -875,7 +921,6 @@ var QuoteFile = (function () {
       resumeLive();
     }
   }
-
   function setSaving(on, label) {
     S.saving = on;
     $('sheet').classList.toggle('is-busy', !!on);
@@ -883,81 +928,164 @@ var QuoteFile = (function () {
     var m = $('fMsg'); if (m && on) m.textContent = label || '';
   }
   function formMsg(t) { var m = $('fMsg'); if (m) m.textContent = t || ''; }
-
-  function sendRemark(action) {
-    var sh = S.sheet; if (!sh || S.saving) return;
-    if (!S.quote || !CONNECTED) { formMsg('Remarks can’t be saved from this copy of the page.'); return; }
-    var req = { quotation: S.qid, kind: sh.type === 'item' ? 'item' : 'extra', via: sh.via || 'list', by: S.name };
-    var label;
-    if (sh.type === 'item') { var it = itemByRow(sh.row); req.row = it.row; req.codeRead = sh.code || ''; label = it.item; }
-    else { req.codeRead = sh.code; label = sh.code; }
-    if (action === 'save') {
-      req.qty = $('fQty').value.trim(); req.note = $('fNote').value.trim();
-      if (!req.qty && !req.note) { formMsg('Add a quantity or a note.'); return; }
-    }
+  function writeFailed(e, what) {
     S.seq++;
-    setSaving(true, action === 'save' ? 'Saving…' : 'Removing…');
-    api(action, req).then(function (j) {
-      S.seq++;
-      S.marks = j.marks || {}; S.extras = j.extras || {}; S.syncedAt = Date.now(); S.offline = false;
-      toast(action === 'save' ? 'Saved ' + label : 'Removed');
+    if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+    setSaving(false);
+    formMsg(e && e.error === 'network' ? 'Not ' + what + ': no connection to the storage. Check the signal and try again.' : problemText(e));
+  }
+
+  function renderFind() {
+    var box = $('findOut'), inp = $('findIn'); if (!box || !inp) return;
+    S.sheet.q = inp.value;
+    if (S.cat.state !== 'ready') { box.innerHTML = '<div class="sheet-meta warn">' + esc(catalogLine() || 'The item list is not on this phone yet.') + '</div>'; return; }
+    var q = inp.value.trim();
+    if (q.length < 2) { box.innerHTML = '<div class="sheet-meta">Type at least two characters.</div>'; return; }
+    var res = searchItems(q, 30);
+    box.innerHTML = res.length ? pickHtml(res) : '<div class="sheet-meta warn">Nothing in the item list matches “' + esc(q) + '”.</div>';
+  }
+
+  /* choose an item (from a scan, the read text, or typing): open its line, new or existing */
+  function chooseItem(it, via, code) {
+    var has = lineForItem(it.item);
+    openSheet({ type: 'line', id: has ? has.id : null, item: has ? null : it, via: via, code: code || '' });
+  }
+
+  function saveLine() {
+    var sh = S.sheet; if (!sh || sh.type !== 'line' || S.saving) return;
+    var old = sh.id ? lineById(sh.id) : null, it = sh.item || { item: old.item, ean: old.ean, name: old.name };
+    var line = { id: old ? old.id : (sh.newId = sh.newId || newId()), type: 'item', item: it.item, ean: it.ean, name: it.name,
+                 qty: $('fQty').value.trim(), note: $('fNote').value.trim(), via: sh.via || 'find' };
+    S.seq++;
+    setSaving(true, 'Saving…');
+    api('line', { quotation: S.qid, line: line, by: S.name }).then(function (j) {
+      S.seq++; S.lines = j.lines || []; S.syncedAt = Date.now(); S.offline = false;
+      toast(old ? 'Saved ' + it.item : 'Added ' + it.item);
       closeSheet(); render();
-    }).catch(function (e) {
-      S.seq++;
-      if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
-      setSaving(false); formMsg(e && e.error === 'network' ? 'Not saved: no connection to the storage. Check the signal and save again.' : problemText(e));
-    });
+    }).catch(function (e) { writeFailed(e, 'saved'); });
   }
 
-  /* ---------- adding a quotation from its file ---------- */
-  function onQuoteFile(file) {
-    if (S.saving) return;
-    if (!S.sheet || S.sheet.type !== 'add') openSheet({ type: 'add' });
-    setSaving(true, 'Reading ' + file.name + '…');
-    QuoteFile.read(file).then(function (q) {
-      var known = null;
-      S.quotes.forEach(function (x) { if (x.id === q.number) known = x; });
-      S.saving = false;
-      openSheet({ type: 'add-confirm', q: q, replace: !!known, had: known ? known.items + ' items and ' + known.marked + ' marked' : '' });
-    }).catch(function (e) {
-      S.saving = false;
-      openSheet({ type: 'add', msg: (e && e.message) || 'The file could not be read.' });
+  function removeLine() {
+    var sh = S.sheet; if (!sh || !sh.id || S.saving) return;
+    S.seq++;
+    setSaving(true, 'Removing…');
+    api('unline', { quotation: S.qid, id: sh.id }).then(function (j) {
+      S.seq++; S.lines = j.lines || []; S.syncedAt = Date.now();
+      toast('Line removed'); closeSheet(); render();
+    }).catch(function (e) { writeFailed(e, 'removed'); });
+  }
+
+  /* ---------- new items with photos ---------- */
+  function shrinkPhoto(file) {
+    /* photos are saved at most 1600 px on the long side, as JPEG */
+    var load = window.createImageBitmap
+      ? window.createImageBitmap(file).then(function (b) { return { el: b, w: b.width, h: b.height }; })
+      : Promise.reject(new Error('no createImageBitmap'));
+    return load.catch(function () {
+      return new Promise(function (resolve, reject) {
+        var fr = new FileReader();
+        fr.onerror = function () { reject(new Error('read failed')); };
+        fr.onload = function () { var im = new Image(); im.onload = function () { resolve({ el: im, w: im.naturalWidth, h: im.naturalHeight }); }; im.onerror = function () { reject(new Error('decode failed')); }; im.src = fr.result; };
+        fr.readAsDataURL(file);
+      });
+    }).then(function (src) {
+      var s = Math.min(1, 1600 / Math.max(src.w, src.h));
+      var c = document.createElement('canvas'); c.width = Math.max(1, Math.round(src.w * s)); c.height = Math.max(1, Math.round(src.h * s));
+      c.getContext('2d').drawImage(src.el, 0, 0, c.width, c.height);
+      var url = c.toDataURL('image/jpeg', 0.8);
+      return { url: url, data: url.slice(url.indexOf(',') + 1) };
     });
   }
-  function sendQuotation() {
-    var sh = S.sheet; if (!sh || sh.type !== 'add-confirm' || S.saving) return;
-    var q = sh.q;
+  function keepNewItemFields() {
+    var sh = S.sheet; if (!sh || sh.type !== 'newitem') return;
+    if ($('fNote')) sh.note = $('fNote').value;
+    if ($('fQty')) sh.qty = $('fQty').value;
+  }
+  function onNewPhotos(files) {
+    var sh = S.sheet; if (!sh || sh.type !== 'newitem' || S.saving) return;
+    keepNewItemFields();
+    var list = Array.prototype.slice.call(files), room = 8 - (sh.photos || []).length - sh.pending.length;
+    if (list.length > room) { list = list.slice(0, Math.max(0, room)); }
+    formMsg('Preparing the photo…');
+    list.reduce(function (p, f) {
+      return p.then(function () { return shrinkPhoto(f).then(function (ph) { sh.pending.push(ph); }); });
+    }, Promise.resolve()).then(function () {
+      if (S.sheet === sh) { openSheet(sh); if (room <= 0) formMsg('A line can hold 8 photos.'); }
+    }).catch(function () { if (S.sheet === sh) { openSheet(sh); formMsg('That photo couldn’t be opened. Take it again.'); } });
+  }
+  function loadPhotos(ids) {
+    ids.forEach(function (id) {
+      if (S.photos[id]) return;
+      api('photo_get', { photo: id }, 60000).then(function (j) {
+        S.photos[id] = 'data:' + (j.mime || 'image/jpeg') + ';base64,' + j.data;
+        var img = document.querySelector('img[data-photo="' + id + '"]'); if (img) img.src = S.photos[id];
+      }).catch(function () { /* the frame stays empty; reopening the line tries again */ });
+    });
+  }
+  function saveNewItem() {
+    var sh = S.sheet; if (!sh || sh.type !== 'newitem' || S.saving) return;
+    keepNewItemFields();
+    var note = (sh.note || '').trim(), qty = (sh.qty || '').trim();
+    if (!note && !sh.pending.length && !(sh.photos || []).length) { formMsg('Add a photo or a description.'); return; }
+    var id = sh.id || (sh.newId = sh.newId || newId()), isNew = !sh.id;
     S.seq++;
-    setSaving(true, sh.replace ? 'Replacing ' + q.number + '…' : 'Putting ' + q.number + ' on the phones…');
-    api('load', { quotation: q.number, customer: q.customer, sourceFile: q.file, sheet: q.sheet, headerRow: q.headerRow, cols: q.cols,
-                  items: q.items, replace: !!sh.replace, by: S.name }).then(function (j) {
-      S.seq++; S.saving = false;
-      closeSheet();
-      toast(q.number + ' is on the phones');
-      var moved = j.moved || [];
-      loadAll(q.number).then(function () {
-        if (moved.length) openSheet({ type: 'info', title: moved.length + (moved.length === 1 ? ' remark was set aside' : ' remarks were set aside'),
-          text: 'The item is no longer in the quotation: ' + moved.join(', ') + '. Nothing was deleted; the remark is in the tab “Removed remarks” of the Sheet.' });
+    setSaving(true, 'Saving…');
+    api('line', { quotation: S.qid, line: { id: id, type: 'new', ean: sh.ean || '', qty: qty, note: note, via: sh.via || 'new' }, by: S.name }).then(function (j) {
+      S.lines = j.lines || []; sh.id = id;                      /* the line exists now; photos attach to it */
+      var total = sh.pending.length, done = 0;
+      function next() {
+        if (!sh.pending.length) return Promise.resolve();
+        formMsg('Saving photo ' + (done + 1) + ' of ' + total + '…');
+        var ph = sh.pending[0];
+        return api('photo_add', { quotation: S.qid, id: id, data: ph.data, by: S.name }, 120000).then(function (r) {
+          S.photos[r.photo] = ph.url; sh.pending.shift(); sh.photos = (sh.photos || []).concat([r.photo]); S.lines = r.lines || S.lines; done++;
+          return next();
+        });
+      }
+      return next().then(function () {
+        S.seq++; S.syncedAt = Date.now(); S.offline = false;
+        toast(isNew ? 'New item added' : 'Saved');
+        closeSheet(); render();
       });
     }).catch(function (e) {
-      S.seq++;
+      S.seq++; render();
       if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
-      S.saving = false;
-      if (e && e.error === 'exists') {                 /* someone added it in the meantime: ask before replacing */
-        openSheet({ type: 'add-confirm', q: q, replace: true, had: e.items + ' items and ' + e.remarks + ' remarks' });
-        return;
-      }
-      setSaving(false);
-      formMsg(e && e.error === 'network' ? 'Not added: no connection to the storage. Check the signal and try again.' : problemText(e));
+      var left = sh.pending.length;
+      if (S.sheet === sh) { S.saving = false; openSheet(sh); formMsg((sh.id && left ? 'The line is saved, but ' + left + (left === 1 ? ' photo is' : ' photos are') + ' not yet. ' : 'Not saved. ') + (e && e.error === 'network' ? 'No connection to the storage. Check the signal and save again.' : problemText(e))); }
     });
+  }
+  function deletePhoto(photo) {
+    var sh = S.sheet; if (!sh || sh.type !== 'newitem' || !sh.id || S.saving) return;
+    keepNewItemFields();
+    S.seq++;
+    setSaving(true, 'Removing the photo…');
+    api('photo_del', { quotation: S.qid, id: sh.id, photo: photo, by: S.name }).then(function (j) {
+      S.seq++; S.lines = j.lines || []; sh.photos = (sh.photos || []).filter(function (p) { return p !== photo; });
+      S.saving = false; openSheet(sh); render();
+    }).catch(function (e) { writeFailed(e, 'removed'); });
+  }
+
+  function createQuote() {
+    var name = $('fCustomer').value.replace(/\s+/g, ' ').trim();
+    if (!name) { formMsg('Type the customer’s name.'); return; }
+    if (S.saving) return;
+    S.seq++;
+    setSaving(true, 'Starting…');
+    api('create', { customer: name, by: S.name, day: today6() }).then(function (j) {
+      S.seq++; S.saving = false;
+      closeSheet();
+      toast(j.quotation.id + ' started');
+      return loadAll(j.quotation.id);
+    }).catch(function (e) { writeFailed(e, 'started'); });
   }
 
   /* ---------- scanning ---------- */
   function scanMsg(t) { $('scanMsg').textContent = t || ''; }
   function idleMsg() {
+    if (S.cat.state !== 'ready') return catalogLine() || 'The item list is not on this phone yet.';
     return S.scan.live
-      ? 'Hold the barcode inside the frame, about a hand’s length away.'
-      : 'The live camera isn’t available here (' + (S.scan.why || 'not started') + '). Take a photo of the barcode or type the number instead.';
+      ? 'Hold the barcode inside the frame, about a hand’s length away. No barcode? Put the printed item number in the frame and tap Read item number.'
+      : 'The live camera isn’t available here (' + (S.scan.why || 'not started') + '). Take a photo of the barcode, or use Read item number.';
   }
   function openScan() {
     S.scan.open = true; S.scan.last = null; S.scan.cool = null;
@@ -1012,7 +1140,7 @@ var QuoteFile = (function () {
     Decoder.decodeFrame($('video')).catch(function () { return null; }).then(function (r) {
       if (!S.scan.live || S.scan.paused || !S.scan.open) return;
       if (r && !(r.code === S.scan.cool && Date.now() < S.scan.coolUntil)) {
-        /* accept at once when the engine is the phone's own detector or the code belongs to this quotation;
+        /* accept at once when the engine is the phone's own detector or the code is in the item list;
            otherwise wait for the same read twice in a row */
         if (r.engine === 'native' || isKnownCode(r.code) || S.scan.last === r.code) { onCode(r.code, 'camera', true); return; }
         S.scan.last = r.code;
@@ -1025,11 +1153,12 @@ var QuoteFile = (function () {
     S.scan.paused = true;
     $('scan').classList.add('is-hit');
     if (navigator.vibrate) { try { navigator.vibrate(60); } catch (e) { /* not supported */ } }
-    if (!S.quote) { openSheet({ type: 'read', code: code, via: via }); return; }
-    var hits = S.index[Decoder.gtinKey(code)] || [];
-    if (hits.length === 1) openSheet({ type: 'item', row: hits[0].row, via: via, code: code });
-    else if (hits.length > 1) openSheet({ type: 'pick', rows: hits.map(function (h) { return h.row; }), via: via, code: code });
-    else openSheet({ type: 'extra', code: code, via: via, sure: sure });
+    if (S.cat.state !== 'ready') { openSheet({ type: 'info', title: code, text: catalogLine() || 'The item list is not on this phone yet, so this barcode cannot be looked up.', code: code }); return; }
+    var hits = itemsForEan(code);
+    if (hits.length === 1) chooseItem(hits[0], via, code);
+    else if (hits.length > 1) openSheet({ type: 'pick', title: code, text: hits.length + ' items share this barcode. Choose the one in hand.', items: hits, via: via, code: code });
+    else openSheet({ type: 'notfound', title: code, code: code, ean: code, via: via,
+      text: sure === false ? 'This read could not be confirmed, and it is not in the item list. Scan again first.' : 'This barcode is not in the item list.' });
   }
 
   function fileToSource(file) {
@@ -1074,43 +1203,116 @@ var QuoteFile = (function () {
     onCode(d, 'typed', true);
   }
 
+  /* ---------- reading a printed item number ---------- */
+  var ocrWorker = null;
+  function textReader() {
+    if (ocrWorker) return ocrWorker;
+    ocrWorker = new Promise(function (resolve, reject) {
+      function start() {
+        window.Tesseract.createWorker('eng', 1, { workerPath: OCR.worker, corePath: OCR.core, langPath: OCR.lang, gzip: true }).then(resolve, reject);
+      }
+      if (window.Tesseract) { start(); return; }
+      var el = document.createElement('script'); el.src = OCR.script; el.async = true;
+      el.onload = start; el.onerror = function () { el.remove(); reject(new Error('download')); };
+      document.head.appendChild(el);
+    });
+    ocrWorker.catch(function () { ocrWorker = null; });
+    return ocrWorker;
+  }
+  function canvasOf(source, sw, sh, crop, maxW) {
+    crop = crop || { x: 0, y: 0, w: sw, h: sh };
+    var s = Math.min(1, maxW / crop.w);
+    var c = document.createElement('canvas'); c.width = Math.max(1, Math.round(crop.w * s)); c.height = Math.max(1, Math.round(crop.h * s));
+    c.getContext('2d').drawImage(source, crop.x, crop.y, crop.w, crop.h, 0, 0, c.width, c.height);
+    return c;
+  }
+  /* passes: [canvas, page mode]; stops at the first pass that finds item numbers from the list */
+  function readText(passes) {
+    return textReader().then(function (worker) {
+      var i = 0;
+      function next() {
+        if (i >= passes.length) return [];
+        var p = passes[i++];
+        return worker.setParameters({ tessedit_pageseg_mode: String(p[1]) }).then(function () { return worker.recognize(p[0]); }).then(function (r) {
+          var found = ItemRead.match(r.data.text, S.cat.byItem, S.cat.upper, 6).map(itemAt);     /* the index gives positions in the item list */
+          return found.length ? found : next();
+        });
+      }
+      return next();
+    });
+  }
+  function showRead(found) {
+    if (!found.length) {
+      openSheet({ type: 'notfound', title: 'No item number read', text: 'Nothing in the picture matches an item number from the item list. Move closer so the number fills the frame, or find the item by typing.' });
+      return;
+    }
+    if (found.length === 1 && !siblings(found[0].item, 1).length) { chooseItem(found[0], 'text'); return; }
+    openSheet({ type: 'pick', title: 'Which item?', text: 'Read from the picture. Tap the item in hand.', items: found, more: siblings(found[0].item, 8).filter(function (s) { return !found.some(function (f) { return f.item === s.item; }); }), via: 'text' });
+  }
+  function readFailed() {
+    resumeLive();
+    scanMsg('The text reader could not be downloaded. Check the connection, or find the item by typing.');
+  }
+  function readPrinted() {
+    if (S.cat.state !== 'ready') { scanMsg(idleMsg()); return; }
+    var v = $('video');
+    if (!S.scan.live || !v.videoWidth) { $('ocrIn').click(); return; }
+    S.scan.paused = true;
+    scanMsg('Reading the item number…');
+    var vw = v.videoWidth, vh = v.videoHeight;
+    var band = canvasOf(v, vw, vh, { x: 0, y: Math.round(vh * 0.25), w: vw, h: Math.round(vh * 0.5) }, 1600);
+    var full = canvasOf(v, vw, vh, null, 1600);
+    /* the framed band first: as printed, as light print on dark, untouched; then the whole frame */
+    readText([[ItemRead.prep(band, false), 6], [ItemRead.prep(band, true), 6], [band, 6], [ItemRead.prep(full, false), 3], [ItemRead.prep(full, true), 3]]).then(showRead).catch(readFailed);
+  }
+  function onOcrPhoto(file) {
+    S.scan.paused = true;
+    scanMsg('Reading the item number…');
+    fileToSource(file).then(function (src) {
+      var pic = canvasOf(src.el, src.w, src.h, null, 1600);
+      return readText([[ItemRead.prep(pic, false), 3], [ItemRead.prep(pic, true), 3], [pic, 3]]);
+    }).then(showRead).catch(readFailed);
+  }
+
   /* ---------- events ---------- */
   document.addEventListener('click', function (ev) {
     var b = ev.target.closest ? ev.target.closest('[data-act]') : null;
     if (!b) { if (ev.target === $('veil') && !S.saving) closeSheet(); return; }
-    var act = b.getAttribute('data-act');
+    var act = b.getAttribute('data-act'), sh = S.sheet;
     if (act === 'scan') openScan();
     else if (act === 'scan-close') closeScan();
     else if (act === 'type-toggle') { var tr = $('typeRow'); tr.hidden = !tr.hidden; if (!tr.hidden) $('typeIn').focus(); }
     else if (act === 'type-go') typedLookup();
-    else if (act === 'filter') { S.filter = b.getAttribute('data-v'); render(); }
-    else if (act === 'open-item') openSheet({ type: 'item', row: Number(b.getAttribute('data-row')), via: 'list' });
-    else if (act === 'open-extra') openSheet({ type: 'extra', code: b.getAttribute('data-code'), via: 'list' });
-    else if (act === 'pick') openSheet({ type: 'item', row: Number(b.getAttribute('data-row')), via: S.sheet.via, code: S.sheet.code });
-    else if (act === 'save') sendRemark('save');
-    else if (act === 'remove') sendRemark('remove');
+    else if (act === 'read-text') { if (!S.scan.open) openScan(); else readPrinted(); }
+    else if (act === 'open-line') { var l = lineById(b.getAttribute('data-id')); if (l) openSheet(l.type === 'new' ? { type: 'newitem', id: l.id } : { type: 'line', id: l.id, via: '' }); }
+    else if (act === 'pick-item') { var it = itemByNumber(b.getAttribute('data-item')); if (it) chooseItem(it, sh && sh.type === 'find' ? 'find' : (sh && sh.via) || 'find', sh && sh.code); }
+    else if (act === 'find') openSheet({ type: 'find', code: sh && sh.code });
+    else if (act === 'new-item') openSheet({ type: 'newitem', ean: sh && sh.ean ? sh.ean : '', code: sh && sh.code, via: 'new' });
+    else if (act === 'save-line') saveLine();
+    else if (act === 'save-new') saveNewItem();
+    else if (act === 'remove-line') removeLine();
+    else if (act === 'photo-del') deletePhoto(b.getAttribute('data-photo'));
+    else if (act === 'photo-drop') { keepNewItemFields(); sh.pending.splice(Number(b.getAttribute('data-i')), 1); openSheet(sh); }
     else if (act === 'sheet-close') closeSheet();
-    else if (act === 'find-instead') { S.sheet = null; $('veil').hidden = true; closeScan(); S.filter = 'all'; render(); $('search').focus(); }
-    else if (act === 'refresh') { loadAll().then(function () { if (S.status === 'ready' && !S.offline) toast('List refreshed'); }); }
+    else if (act === 'new-quote') openSheet({ type: 'newquote' });
+    else if (act === 'create-quote') createQuote();
+    else if (act === 'refresh') { loadAll().then(function () { if (S.status === 'ready' && !S.offline) toast('Refreshed'); }); }
     else if (act === 'signout') showGate('');
-    else if (act === 'add-quote') openSheet({ type: 'add' });
-    else if (act === 'add-go') sendQuotation();
   });
-  $('search').addEventListener('input', function () { S.query = this.value; render(); });
+  document.addEventListener('input', function (ev) { if (ev.target && ev.target.id === 'findIn') renderFind(); });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter' || !ev.target) return;
+    if (ev.target.id === 'typeIn') typedLookup();
+    else if (ev.target.id === 'fCustomer') createQuote();
+  });
   $('quoteSel').addEventListener('change', function () {
-    if (this.value === '__add__' || !this.value) { var add = this.value === '__add__'; render(); if (add) openSheet({ type: 'add' }); return; }
-    S.quote = null; S.marks = {}; S.extras = {}; buildIndex(); S.qid = this.value;
+    if (this.value === '__new__' || !this.value) { var add = this.value === '__new__'; render(); if (add) openSheet({ type: 'newquote' }); return; }
+    S.quote = null; S.lines = []; S.qid = this.value;
     loadAll(this.value);
   });
-  $('quoteIn').addEventListener('change', function () {
-    var f = this.files && this.files[0]; this.value = '';
-    if (f) onQuoteFile(f);
-  });
-  $('photoIn').addEventListener('change', function () {
-    var f = this.files && this.files[0]; this.value = '';
-    if (f) onPhoto(f);
-  });
-  $('typeIn').addEventListener('keydown', function (ev) { if (ev.key === 'Enter') typedLookup(); });
+  $('photoIn').addEventListener('change', function () { var f = this.files && this.files[0]; this.value = ''; if (f) onPhoto(f); });
+  $('ocrIn').addEventListener('change', function () { var f = this.files && this.files[0]; this.value = ''; if (f) onOcrPhoto(f); });
+  $('newPhotoIn').addEventListener('change', function () { var fs = this.files; if (fs && fs.length) onNewPhotos(fs); this.value = ''; });
   $('gateForm').addEventListener('submit', function (ev) { ev.preventDefault(); submitGate(); });
   document.addEventListener('visibilitychange', function () {
     if (S.scan.open) { if (document.hidden) stopCamera(); else startCamera(); }
