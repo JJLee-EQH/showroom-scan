@@ -6,7 +6,7 @@
      Paste the web app URL from Apps Script between the quotes (it ends in /exec).
      ==================================================================================== -->
 <script>
-var API_URL = 'https://script.google.com/macros/s/AKfycbx2dsvlysR8l3rACA9rjOz7YeMt8D3VYCs6jvR2HI2gt2csDY6P9JWvECF8Xb50UZqzWg/exec';
+var API_URL = 'https://script.google.com/macros/s/AKfycbwR_2Jr58uwXJZ5iHA1tbCQZVaCD-eTkTvpsc7TKTVuCkk28icnXqM-tEC15AtvnHiKuQ/exec';
 var REFRESH_MS = 20000;   /* how often an open phone re-reads the lines, in milliseconds */
 </script>
 <meta charset="utf-8">
@@ -233,6 +233,7 @@ button { cursor: pointer; }
   <div class="top-in">
     <div class="top-row">
       <select id="quoteSel" class="quote-sel" aria-label="Quotation"></select>
+      <button id="editBtn" class="link-btn" data-act="edit-quote" hidden>Edit</button>
       <button id="refreshBtn" class="link-btn" data-act="refresh" hidden>Refresh</button>
     </div>
     <div class="sub"><span id="customer"></span><span id="progress"></span></div>
@@ -573,7 +574,7 @@ var ItemRead = (function () {
     code: '', name: '',
     status: 'gate',               // unconfigured | gate | loading | ready | error
     problem: '',
-    quotes: [], qid: null, quote: null, lines: [],
+    quotes: [], qid: null, quote: null, lines: [], trash: 0,
     sheet: null, saving: false,
     seq: 0, syncedAt: 0, offline: false,
     cat: { at: '', items: [], byEan: {}, byItem: {}, upper: [], state: 'none' },   // none | loading | ready | empty | failed
@@ -633,6 +634,7 @@ var ItemRead = (function () {
     if (c === 'not_set_up') return 'The storage has no access code yet. In the Sheet, use Scan tool > 2. Set the team access code.';
     if (c === 'busy') return 'Someone else is saving at this moment. Save again.';
     if (c === 'not_found') return 'That line or quotation is no longer in the Sheet. Refresh the list.';
+    if (c === 'number_taken') return 'Another quotation already has that number, perhaps one in the trash can.';
     if (c === 'photo_too_big') return 'That photo is too large to save.';
     if (c === 'too_many_photos') return 'A line can hold 8 photos. Remove one first.';
     if (c === 'bad_request') return 'The storage did not accept this. Update the Sheet’s script to the latest version and try again.';
@@ -737,17 +739,26 @@ var ItemRead = (function () {
   }
   function fail(e) {
     if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+    if (e && e.error === 'not_found' && S.qid) {             /* the open quotation was renamed or deleted on another phone */
+      S.quote = null; S.qid = null; S.lines = []; forget('scan.qid');
+      if (S.scan.open) closeScan();
+      toast('That quotation was renamed or deleted'); loadAll(); return;
+    }
     if (S.quote || S.quotes.length) { S.offline = true; render(); return; }       /* keep showing what was loaded */
     S.status = 'error'; S.problem = problemText(e); render();
   }
 
   /* first load, quotation switch and the Refresh button */
+  var loadsRunning = 0;
   function loadAll(wantQid) {
     var seq = ++S.seq;
+    loadsRunning++;
+    function done() { loadsRunning--; S.seq++; }          /* anything that started before this point is out of date now */
     if (!S.quote && !S.quotes.length) { S.status = 'loading'; render(); }
     return api('list').then(function (j) {
       if (seq !== S.seq) return;
       S.quotes = j.quotations || [];
+      S.trash = j.trash || 0;
       syncCatalog(j.catalog || null);
       var pick = null, want = wantQid || S.qid || recall('scan.qid');
       S.quotes.forEach(function (q) { if (q.id === want) pick = q.id; });
@@ -757,14 +768,24 @@ var ItemRead = (function () {
         if (seq !== S.seq) return;
         applyOpen(o); remember('scan.qid', pick); render();
       });
-    }).catch(function (e) { if (seq === S.seq) fail(e); });
+    }).then(done, function (e) { var mine = seq === S.seq; done(); if (mine) fail(e); });
   }
   /* quiet background refresh of the open quotation's lines */
+  var quietRuns = 0;
   function refreshQuiet() {
-    if (S.status !== 'ready' || !S.quote || S.saving || document.hidden) return;
+    if (S.status !== 'ready' || S.saving || document.hidden || loadsRunning) return;       /* never while a quotation is being opened */
+    if (++quietRuns % 3 === 0 || !S.quote) {              /* now and then also the list of quotations, the trash can and the item list */
+      var seq0 = S.seq;
+      api('list').then(function (j) {
+        if (seq0 !== S.seq || S.saving) return;
+        S.quotes = j.quotations || []; S.trash = j.trash || 0; syncCatalog(j.catalog || null); S.offline = false; render();
+      }).catch(function () { /* the next round tries again */ });
+    }
+    if (!S.quote) return;
     var seq = S.seq;
-    api('open', { quotation: S.qid }).then(function (o) {
-      if (seq !== S.seq || S.saving) return;            /* something newer happened meanwhile */
+    var asked = S.qid;
+    api('open', { quotation: asked }).then(function (o) {
+      if (seq !== S.seq || S.saving || loadsRunning || asked !== S.qid) return;            /* something newer happened meanwhile */
       applyOpen(o); render();
     }).catch(function (e) { if (seq === S.seq) fail(e); });
   }
@@ -822,11 +843,13 @@ var ItemRead = (function () {
     var canAdd = CONNECTED && S.status === 'ready';
     sel.innerHTML = (S.quotes.length
       ? (q ? '' : '<option value="">Choose a quotation</option>') + S.quotes.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === S.qid ? ' selected' : '') + '>' + esc(x.customer) + '</option>'; }).join('')
-      : '<option value="">Showroom scan</option>') + (canAdd ? '<option value="__new__">New quotation…</option>' : '');
+      : '<option value="">Showroom scan</option>') + (canAdd ? '<option value="__new__">New quotation…</option>' : '') +
+      (canAdd && S.trash ? '<option value="__trash__">Trash can (' + S.trash + ')…</option>' : '');
     sel.disabled = !canAdd;
     $('customer').textContent = q ? q.id + (q.by ? ', started by ' + q.by : '') : '';
     $('progress').innerHTML = q ? '<b>' + S.lines.length + '</b> ' + (S.lines.length === 1 ? 'line' : 'lines') : '';
     $('refreshBtn').hidden = !(S.status === 'ready' || S.status === 'error') || !CONNECTED;
+    $('editBtn').hidden = !q;
     $('dock').hidden = !q;
     var notes = [];
     if (S.offline) notes.push('No connection to the storage. Showing what was loaded at ' + clock(S.syncedAt) + '; nothing can be saved until the signal is back.');
@@ -919,6 +942,30 @@ var ItemRead = (function () {
         '<label class="field"><span>Customer</span><input id="fCustomer" autocomplete="off" maxlength="120"></label>' +
         '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
         '<button class="btn primary" data-act="create-quote">Start quotation</button><button class="btn" data-act="sheet-close">Cancel</button></div>';
+    } else if (sh.type === 'editquote') {
+      if (sh.confirm) {
+        html = '<div class="sheet-no">Move to the trash can?</div><div class="sheet-meta">' + esc(S.quote.customer) + ', ' + esc(S.quote.id) + ', with ' + S.lines.length + (S.lines.length === 1 ? ' line' : ' lines') +
+          '. It disappears from every phone. Nothing is erased: it can be put back from the trash can.</div>' +
+          '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
+          '<button class="btn danger" data-act="do-delete">Move to the trash can</button><button class="btn" data-act="sheet-close">Keep it</button></div>';
+      } else {
+        html = '<div class="sheet-no">Edit quotation</div>' +
+          '<label class="field"><span>Customer</span><input id="fCustomer2" autocomplete="off" maxlength="120" value="' + esc(sh.customer !== undefined ? sh.customer : S.quote.customer) + '"></label>' +
+          '<label class="field"><span>Quotation number</span><input id="fNumber" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="40" value="' + esc(sh.number !== undefined ? sh.number : S.quote.id) + '"></label>' +
+          '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
+          '<button class="btn primary" data-act="save-quote">Save changes</button><button class="btn" data-act="sheet-close">Cancel</button>' +
+          '<button class="btn danger" data-act="ask-delete">Delete quotation</button></div>';
+      }
+    } else if (sh.type === 'trash') {
+      html = '<div class="sheet-no">Trash can</div><div class="sheet-meta">Deleted quotations stay here with all their lines and photos until someone puts them back.</div>' +
+        (sh.items === undefined ? '<div class="sheet-meta">Loading…</div>' : !sh.items.length ? '<div class="sheet-meta">The trash can is empty.</div>' :
+          sh.items.map(function (x) {
+            var when = x.deletedAt ? new Date(x.deletedAt) : null;
+            return '<div class="pick"><b>' + esc(x.customer) + '</b><span>' + esc(x.id) + ', ' + x.lines + (x.lines === 1 ? ' line' : ' lines') +
+              (x.deletedBy ? ', deleted by ' + esc(x.deletedBy) : '') + (when && !isNaN(when.getTime()) ? ' on ' + when.toLocaleDateString([], { day: 'numeric', month: 'short' }) : '') + '</span>' +
+              '<div class="sheet-actions"><button class="btn" data-act="restore-quote" data-id="' + esc(x.id) + '">Put back</button></div></div>';
+          }).join('')) +
+        '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions"><button class="btn" data-act="sheet-close">Close</button></div>';
     } else if (sh.type === 'info') {
       html = '<div class="sheet-no">' + esc(sh.title) + '</div><div class="sheet-meta">' + esc(sh.text) + '</div>' +
         '<div class="sheet-actions"><button class="btn primary" data-act="sheet-close">OK</button></div>';
@@ -1085,6 +1132,51 @@ var ItemRead = (function () {
       S.seq++; S.lines = j.lines || []; sh.photos = (sh.photos || []).filter(function (p) { return p !== photo; });
       S.saving = false; openSheet(sh); render();
     }).catch(function (e) { writeFailed(e, 'removed'); });
+  }
+
+  /* ---------- rename, delete, trash can ---------- */
+  function saveQuote() {
+    var sh = S.sheet; if (!sh || sh.type !== 'editquote' || S.saving) return;
+    var customer = $('fCustomer2').value.replace(/\s+/g, ' ').trim(), number = $('fNumber').value.replace(/\s+/g, ' ').trim();
+    sh.customer = customer; sh.number = number;
+    if (!customer) { formMsg('Type the customer’s name.'); return; }
+    if (!/^[A-Za-z0-9][A-Za-z0-9 ._\/-]{2,39}$/.test(number)) { formMsg('A quotation number has 3 to 40 letters, digits, spaces, dots, dashes or slashes, and starts with a letter or digit.'); return; }
+    if (customer === S.quote.customer && number === S.quote.id) { closeSheet(); return; }
+    S.seq++;
+    setSaving(true, 'Saving…');
+    api('quote_edit', { quotation: S.qid, customer: customer, newId: number, by: S.name }).then(function (j) {
+      S.seq++; S.saving = false;
+      closeSheet(); toast('Quotation saved');
+      S.qid = j.quotation.id; remember('scan.qid', S.qid);
+      return loadAll(S.qid);
+    }).catch(function (e) { writeFailed(e, 'saved'); });
+  }
+  function deleteQuote() {
+    if (S.saving || !S.quote) return;
+    S.seq++;
+    setSaving(true, 'Moving to the trash can…');
+    api('quote_delete', { quotation: S.qid, by: S.name }).then(function () {
+      S.seq++; S.saving = false;
+      closeSheet(); toast('Moved to the trash can');
+      S.quote = null; S.qid = null; S.lines = []; forget('scan.qid');
+      return loadAll();
+    }).catch(function (e) { writeFailed(e, 'deleted'); });
+  }
+  function openTrash() {
+    var sh = { type: 'trash' };
+    openSheet(sh);
+    api('trash').then(function (j) { if (S.sheet === sh) { sh.items = j.quotations || []; openSheet(sh); } })
+      .catch(function (e) { if (S.sheet === sh) { sh.items = []; openSheet(sh); formMsg(e && e.error === 'network' ? 'No connection to the storage.' : problemText(e)); } });
+  }
+  function restoreQuote(id) {
+    if (S.saving) return;
+    S.seq++;
+    setSaving(true, 'Putting it back…');
+    api('quote_restore', { quotation: id }).then(function () {
+      S.seq++; S.saving = false;
+      closeSheet(); toast('Put back');
+      return loadAll(id);
+    }).catch(function (e) { writeFailed(e, 'put back'); });
   }
 
   function createQuote() {
@@ -1496,6 +1588,11 @@ var ItemRead = (function () {
     else if (act === 'photo-drop') { keepNewItemFields(); sh.pending.splice(Number(b.getAttribute('data-i')), 1); openSheet(sh); }
     else if (act === 'sheet-close') closeSheet();
     else if (act === 'new-quote') openSheet({ type: 'newquote' });
+    else if (act === 'edit-quote') { if (S.quote) openSheet({ type: 'editquote' }); }
+    else if (act === 'save-quote') saveQuote();
+    else if (act === 'ask-delete') openSheet({ type: 'editquote', confirm: true });
+    else if (act === 'do-delete') deleteQuote();
+    else if (act === 'restore-quote') restoreQuote(b.getAttribute('data-id'));
     else if (act === 'create-quote') createQuote();
     else if (act === 'refresh') { loadAll().then(function () { if (S.status === 'ready' && !S.offline) toast('Refreshed'); }); }
     else if (act === 'signout') showGate('');
@@ -1505,8 +1602,10 @@ var ItemRead = (function () {
     if (ev.key !== 'Enter' || !ev.target) return;
     if (ev.target.id === 'typeIn') typedLookup();
     else if (ev.target.id === 'fCustomer') createQuote();
+    else if (ev.target.id === 'fCustomer2' || ev.target.id === 'fNumber') saveQuote();
   });
   $('quoteSel').addEventListener('change', function () {
+    if (this.value === '__trash__') { render(); openTrash(); return; }
     if (this.value === '__new__' || !this.value) { var add = this.value === '__new__'; render(); if (add) openSheet({ type: 'newquote' }); return; }
     S.quote = null; S.lines = []; S.qid = this.value;
     loadAll(this.value);
