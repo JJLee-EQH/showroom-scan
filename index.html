@@ -6,7 +6,7 @@
      Paste the web app URL from Apps Script between the quotes (it ends in /exec).
      ==================================================================================== -->
 <script>
-var API_URL = 'https://script.google.com/macros/s/AKfycbyCT7Ip-T_36PVLBZka-impZyeWPwmbnWBDYG_rxe3dtZ8CG5NtLYGPgRGLM_GO5TfaYA/exec';
+var API_URL = 'https://script.google.com/macros/s/AKfycbxIOLCVED2ECxVnZMlrLLYr0aYoDP3vIfGQFCyo2SmK4SI_J-rIkKFKnpoDdfSCws4DWQ/exec';
 var REFRESH_MS = 20000;   /* how often an open phone re-reads the lines, in milliseconds */
 </script>
 <meta charset="utf-8">
@@ -218,6 +218,12 @@ button { cursor: pointer; }
 .scan-actions + .scan-actions { margin-top: 10px; }
 .scan-actions .btn.solid { background: #fff; color: #05080B; font-weight: 600; font-size: 16px; }
 #findOut { margin-top: 10px; max-height: 44vh; overflow-y: auto; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chips button { border: 1px solid var(--line); background: var(--page); border-radius: 999px; padding: 8px 14px; font-size: 15px; }
+.check { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 16px; }
+.check input { width: 22px; height: 22px; flex: none; }
+.check small { display: block; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.field input[type="date"] { min-height: 48px; }
 .scan-note { position: relative; z-index: 3; margin: 4px 16px 0; padding: 12px 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.96); color: #16222E; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
 .scan-note b { display: block; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
 .scan-note span { display: block; font-size: 14px; color: #5B6875; overflow-wrap: anywhere; }
@@ -249,8 +255,9 @@ button { cursor: pointer; }
     Scan barcode or item number
   </button>
   <div class="dock-row">
-    <button class="btn" data-act="find">Find by typing</button>
-    <button class="btn" data-act="new-item">New item with photos</button>
+    <button class="btn" data-act="find">Find item</button>
+    <button class="btn" data-act="new-item">New item</button>
+    <button class="btn" data-act="output">Output</button>
   </div>
 </div></div>
 
@@ -288,6 +295,7 @@ button { cursor: pointer; }
     <p>Enter the team access code to open the quotations.</p>
     <label class="field"><span>Team access code</span><input id="gCode" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
     <label class="field"><span>Your name</span><input id="gName" type="text" autocomplete="name" maxlength="60"></label>
+    <div id="gPeople" class="chips" hidden></div>
     <p class="form-msg" id="gMsg" role="alert"></p>
     <button class="btn primary" type="submit" id="gGo">Open</button>
   </form>
@@ -558,6 +566,121 @@ var ItemRead = (function () {
   return { match: match, tokens: tokens, prep: prep };
 })();
 
+/* ===== Building the internal recap workbook on this device ===== */
+var Recap = (function () {
+  var LIB = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+  /* the empty recap workbook (header, styles, one pattern row), made from INTERNAL - RECAP - EL CORTE INGLES - EQ26000530.xls */
+  var TEMPLATE = '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';
+  var loading = null;
+  function lib() {
+    if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+    if (loading) return loading;
+    loading = new Promise(function (resolve, reject) {
+      var el = document.createElement('script'); el.src = LIB; el.async = true;
+      el.onload = function () { if (window.ExcelJS) resolve(window.ExcelJS); else { loading = null; reject(new Error('library')); } };
+      el.onerror = function () { el.remove(); loading = null; reject(new Error('library')); };
+      document.head.appendChild(el);
+    });
+    return loading;
+  }
+  function fromBase64(b64) { var bin = atob(b64), out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out.buffer; }
+  function toBase64(buffer) { var bytes = new Uint8Array(buffer), bin = ''; for (var i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(bin); }
+  function num(t) { var s = String(t == null ? '' : t).replace(/,/g, '').trim(); if (!s) return null; var v = Number(s); return isFinite(v) ? v : null; }
+  function day(t) { var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(t || '').trim()); return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null; }
+  function note(l) { var q = (l.qty || '').trim(), n = (l.note || '').trim(); return q && n ? 'Qty ' + q + ' \u2013 ' + n : q ? 'Qty ' + q : n; }
+  function clone(o) { return JSON.parse(JSON.stringify(o || {})); }
+  function safe(t) { return String(t).replace(/[\\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+
+  /* data: answer of output_data. photos: {photo id: {base64, w, h}} already made small. date: 'YYYY-MM-DD'. markup: 0.16 */
+  function build(data, photos, markup, date) {
+    return lib().then(function (ExcelJS) {
+      var wb = new ExcelJS.Workbook();
+      return wb.xlsx.load(fromBase64(TEMPLATE)).then(function () {
+        var ws = wb.getWorksheet('EQH - RECAP'), em = wb.getWorksheet('Email Format');
+        var q = data.quotation, items = data.items || {}, look = data.lookups || {}, ports = look.port || {}, devs = look.developer || {};
+        ws.getCell('A2').value = q.id; ws.getCell('D2').value = q.customer;
+        ws.getCell('E2').value = day(date); ws.getCell('E2').numFmt = 'dd/mm/yyyy';
+        ws.getCell('I3').value = markup;
+        var NOTE = 20, head = ws.getRow(4), first = ws.getRow(5), pattern = [], height = first.height, c;
+        head.getCell(NOTE).value = 'SHOWROOM NOTE'; head.getCell(NOTE).style = clone(head.getCell(16).style);
+        for (c = 1; c <= 19; c++) pattern.push(clone(first.getCell(c).style));
+        pattern.push(clone(first.getCell(16).style));
+        var lines = data.lines || [];
+        var existing = lines.filter(function (l) { return l.type !== 'new'; }).sort(function (a, b) { return a.item < b.item ? -1 : a.item > b.item ? 1 : 0; });
+        var fresh = lines.filter(function (l) { return l.type === 'new'; });
+        var warnings = [], placed = [], pictures = 0, r = 5;
+        existing.concat(fresh).forEach(function (l) {
+          var row = ws.getRow(r); row.height = height;
+          for (c = 1; c <= 20; c++) row.getCell(c).style = clone(pattern[c - 1]);
+          if (note(l)) row.getCell(NOTE).value = note(l);
+          if (l.type === 'new') {
+            placed.push(['\uffff', '(new items)', 'NEW ITEM', r]);
+            row.getCell(1).value = 'NEW ITEM';
+            row.getCell(3).value = 'NEW ITEM' + (l.ean ? ' (barcode ' + l.ean + ')' : '');
+            var shots = (l.photos || []).filter(function (p) { return photos[p]; }).slice(0, 3);
+            if ((l.photos || []).length > shots.length) warnings.push('New item in row ' + r + ': ' + ((l.photos || []).length - shots.length) + ' photo(s) did not fit or could not be fetched.');
+            var boxW = 196, boxH = 150, tile = Math.floor(boxW / Math.max(1, shots.length)) - 4;
+            shots.forEach(function (p, k) {
+              var ph = photos[p], sc = Math.min(tile / ph.w, boxH / ph.h, 1), w = Math.max(1, Math.round(ph.w * sc)), h = Math.max(1, Math.round(ph.h * sc));
+              var id = wb.addImage({ base64: ph.base64, extension: 'jpeg' });
+              ws.addImage(id, { tl: { col: 1 + (6 + k * (tile + 4)) / 204, row: r - 1 + 6 / 162 }, ext: { width: w, height: h } });
+              pictures++;
+            });
+            r++; return;
+          }
+          var info = items[l.item];
+          row.getCell(1).value = l.item;
+          if (!info) {
+            placed.push(['\ufffe', '(no developer)', l.item, r]);
+            if (l.name) row.getCell(3).value = l.name;
+            warnings.push(l.item + ' is not in the item list any more, so its AS400 columns are empty.');
+            r++; return;
+          }
+          if (info.item_name || l.name) row.getCell(3).value = info.item_name || l.name;
+          if (info.description) row.getCell(4).value = info.description;
+          if (info.packaging) row.getCell(5).value = info.packaging;
+          if (num(info.fob_usd) !== null) row.getCell(6).value = num(info.fob_usd);
+          var cost = num(info.cost), cur = String(info.cost_currency || '').toUpperCase();
+          if (cost !== null && (cur === 'USD' || cur === 'RMB')) { row.getCell(7).value = cur === 'USD' ? cost : 0; row.getCell(8).value = cur === 'RMB' ? cost : 0; }
+          else if (cost) warnings.push(l.item + ': its factory price is in ' + (cur || 'an unknown currency') + ', which the recap has no column for, so FAC PRICE is left empty.');
+          row.getCell(9).value = { formula: 'IF(AND(ISNUMBER(G' + r + '),G' + r + '<>0),G' + r + '/(1-$I$3),IF(AND(ISNUMBER(H' + r + '),H' + r + '<>0),H' + r + '/(1-$I$3),""))' };
+          var port = String(info.port || '').trim();
+          if (port) row.getCell(10).value = ports[port.toUpperCase()] || port;
+          if (num(info.moq) !== null) row.getCell(11).value = num(info.moq);
+          row.getCell(12).value = { formula: 'OR(R' + r + '="YES",S' + r + '="YES")' };
+          if (day(info.fty_date)) row.getCell(13).value = day(info.fty_date);
+          if (day(info.tpc_date)) row.getCell(14).value = day(info.tpc_date);
+          var code = String(info.buyer_code || '').trim(), developer = String(info.developer || '').trim() || devs[code.toUpperCase()] || code;
+          if (developer) row.getCell(15).value = developer;
+          if (info.internal_remark) row.getCell(16).value = info.internal_remark;
+          if (info.supplier_remark) row.getCell(17).value = info.supplier_remark;
+          row.getCell(18).value = { formula: 'IF(M' + r + '>EDATE($E$2,-3),"YES","NO")' };
+          row.getCell(19).value = { formula: 'IF(N' + r + '>EDATE($E$2,-3),"YES","NO")' };
+          placed.push([developer.toUpperCase() || '\ufffe', developer || '(no developer)', l.item, r]);
+          r++;
+        });
+        ws.pageSetup.printArea = 'A1:K' + Math.max(r - 1, 5);
+        /* Email Format: every item under its developer (the name once per group); note and flag follow the recap sheet */
+        placed.sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : a[3] - b[3]; });
+        var before = null;
+        placed.forEach(function (p, i) {
+          var e = em.getRow(4 + i);
+          if (p[1] !== before) e.getCell(1).value = p[1];
+          e.getCell(2).value = p[2];
+          e.getCell(3).value = { formula: "IF('EQH - RECAP'!T" + p[3] + '="","",\'EQH - RECAP\'!T' + p[3] + ')' };
+          if (p[2] !== 'NEW ITEM') e.getCell(4).value = { formula: "IF('EQH - RECAP'!L" + p[3] + '="","",\'EQH - RECAP\'!L' + p[3] + ')' };
+          before = p[1];
+        });
+        return wb.xlsx.writeBuffer().then(function (buffer) {
+          return { buffer: buffer, base64: toBase64(buffer), name: 'INTERNAL - RECAP - ' + safe(q.customer).toUpperCase() + ' - ' + safe(q.id) + '.xlsx',
+                   rows: r - 5, existing: existing.length, fresh: fresh.length, pictures: pictures, warnings: warnings };
+        });
+      });
+    });
+  }
+  return { build: build };
+})();
+
 /* ===== App ===== */
 (function () {
   'use strict';
@@ -574,7 +697,7 @@ var ItemRead = (function () {
     code: '', name: '',
     status: 'gate',               // unconfigured | gate | loading | ready | error
     problem: '',
-    quotes: [], qid: null, quote: null, lines: [], trash: 0,
+    quotes: [], qid: null, quote: null, lines: [], trash: 0, people: [],
     sheet: null, saving: false,
     seq: 0, syncedAt: 0, offline: false,
     cat: { at: '', items: [], byEan: {}, byItem: {}, upper: [], state: 'none' },   // none | loading | ready | empty | failed
@@ -638,6 +761,13 @@ var ItemRead = (function () {
     if (c === 'photo_too_big') return 'That photo is too large to save.';
     if (c === 'too_many_photos') return 'A line can hold 8 photos. Remove one first.';
     if (c === 'bad_request') return 'The storage did not accept this. Update the Sheet’s script to the latest version and try again.';
+    if (c === 'no_recipient') return 'Choose at least one person, or type an email address.';
+    if (c === 'bad_email') return 'This is not an email address: ' + (e.detail || '') + '.';
+    if (c === 'too_many_recipients') return 'A recap can go to 10 people at most.';
+    if (c === 'mail_quota') return 'The team account has reached today’s limit for sending email. Use Download only and send the file yourself.';
+    if (c === 'file_too_big') return 'The recap file is too large to send. Use Download only.';
+    if (c === 'server_error' && /MailApp|send_mail|script\.send/i.test(e.detail || '')) return 'Sending email is not allowed yet. In the Sheet, use Scan tool > 5. Allow sending recaps by email, then deploy a new version.';
+    if (c === 'server_error' && /DriveApp|auth\/drive/i.test(e.detail || '')) return 'Saving photos is not allowed yet. In the Sheet, use Scan tool > 4. Allow saving photos to Google Drive, then deploy a new version.';
     if (c === 'server_error') return 'The Sheet reported a problem: ' + (e.detail || 'unknown');
     if (c === 'network') return 'No connection to the storage. Check the signal and try again.';
     return 'The storage gave an answer the page couldn’t read (' + (c || 'unknown') + (e && e.detail ? ' ' + e.detail : '') + ').';
@@ -758,7 +888,7 @@ var ItemRead = (function () {
     return api('list').then(function (j) {
       if (seq !== S.seq) return;
       S.quotes = j.quotations || [];
-      S.trash = j.trash || 0;
+      S.trash = j.trash || 0; S.people = j.people || [];
       syncCatalog(j.catalog || null);
       var pick = null, want = wantQid || S.qid || recall('scan.qid');
       S.quotes.forEach(function (q) { if (q.id === want) pick = q.id; });
@@ -778,7 +908,7 @@ var ItemRead = (function () {
       var seq0 = S.seq;
       api('list').then(function (j) {
         if (seq0 !== S.seq || S.saving) return;
-        S.quotes = j.quotations || []; S.trash = j.trash || 0; syncCatalog(j.catalog || null); S.offline = false; render();
+        S.quotes = j.quotations || []; S.trash = j.trash || 0; S.people = j.people || []; syncCatalog(j.catalog || null); S.offline = false; render();
       }).catch(function () { /* the next round tries again */ });
     }
     if (!S.quote) return;
@@ -799,6 +929,7 @@ var ItemRead = (function () {
     $('gName').value = S.name || recall('scan.name');
     $('gCode').value = '';
     $('gMsg').textContent = msg || '';
+    $('gPeople').hidden = true; $('gPeople').innerHTML = '';
     $('gate').hidden = false;
     render();
     try { ($('gName').value ? $('gCode') : $('gName')).focus(); } catch (e) { /* focus is a nicety */ }
@@ -806,7 +937,18 @@ var ItemRead = (function () {
   function submitGate() {
     var code = $('gCode').value.trim(), name = $('gName').value.trim();
     if (!code) { $('gMsg').textContent = 'Type the team access code.'; return; }
-    if (!name) { $('gMsg').textContent = 'Type your name, so colleagues see who added a line.'; return; }
+    if (!name) {                                     /* no name yet: check the code and offer the names from the People list */
+      $('gGo').disabled = true; $('gMsg').textContent = 'Checking…';
+      S.code = code;
+      api('list').then(function (j) {
+        S.code = ''; $('gGo').disabled = false;
+        var people = j.people || [];
+        $('gPeople').innerHTML = people.map(function (x) { return '<button type="button" data-act="pick-name" data-name="' + esc(x.name) + '">' + esc(x.name) + '</button>'; }).join('');
+        $('gPeople').hidden = !people.length;
+        $('gMsg').textContent = people.length ? 'Tap your name, or type it, then tap Open.' : 'Type your name, so colleagues see who added a line.';
+      }).catch(function (e) { S.code = ''; $('gGo').disabled = false; $('gMsg').textContent = problemText(e); });
+      return;
+    }
     $('gGo').disabled = true; $('gMsg').textContent = 'Checking…';
     S.code = code; S.name = name;
     api('list').then(function () {
@@ -942,6 +1084,23 @@ var ItemRead = (function () {
         '<label class="field"><span>Customer</span><input id="fCustomer" autocomplete="off" maxlength="120"></label>' +
         '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
         '<button class="btn primary" data-act="create-quote">Start quotation</button><button class="btn" data-act="sheet-close">Cancel</button></div>';
+    } else if (sh.type === 'output') {
+      var creator = String(S.quote.by || '').trim().toLowerCase(), me = String(S.name || '').trim().toLowerCase();
+      var hasCreator = S.people.some(function (x) { return x.name.trim().toLowerCase() === creator; });
+      var today = new Date(), iso = today.getFullYear() + '-' + ('0' + (today.getMonth() + 1)).slice(-2) + '-' + ('0' + today.getDate()).slice(-2);
+      html = '<div class="sheet-no">Output recap</div><div class="sheet-meta">' + esc(S.quote.customer) + ', ' + esc(S.quote.id) + ', ' + S.lines.length + (S.lines.length === 1 ? ' line' : ' lines') +
+        '. The recap file is built on this device and sent from the team account.</div>' +
+        '<label class="field"><span>Date on the recap</span><input id="oDate" type="date" value="' + iso + '"></label>' +
+        '<label class="field"><span>Mark-up %</span><input id="oMarkup" inputmode="decimal" autocomplete="off" value="' + esc(recall('scan.markup') || '16') + '"></label>' +
+        '<div class="field"><span>Send to</span>' + (S.people.length ? S.people.map(function (x) {
+          var n = x.name.trim().toLowerCase(), on = hasCreator ? n === creator : n === me;
+          return '<label class="check"><input type="checkbox" name="oTo" value="' + esc(x.email) + '"' + (on ? ' checked' : '') + '><span>' + esc(x.name) + '<small>' + esc(x.email) + '</small></span></label>';
+        }).join('') : '<div class="sheet-meta">No names to choose from yet. Add colleagues to the tab “People” in the Sheet, or type an address below.</div>') + '</div>' +
+        '<label class="field"><span>Other email addresses</span><input id="oOther" type="text" inputmode="email" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="name@company.com, name2@company.com"></label>' +
+        '<label class="field"><span>Message (optional)</span><textarea id="oMsg" rows="2" maxlength="1000"></textarea></label>' +
+        '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
+        '<button class="btn primary" data-act="output-send">Send by email</button><button class="btn" data-act="output-download">Download only</button>' +
+        '<button class="btn" data-act="sheet-close">Cancel</button></div>';
     } else if (sh.type === 'editquote') {
       if (sh.confirm) {
         html = '<div class="sheet-no">Move to the trash can?</div><div class="sheet-meta">' + esc(S.quote.customer) + ', ' + esc(S.quote.id) + ', with ' + S.lines.length + (S.lines.length === 1 ? ' line' : ' lines') +
@@ -1132,6 +1291,79 @@ var ItemRead = (function () {
       S.seq++; S.lines = j.lines || []; sh.photos = (sh.photos || []).filter(function (p) { return p !== photo; });
       S.saving = false; openSheet(sh); render();
     }).catch(function (e) { writeFailed(e, 'removed'); });
+  }
+
+  /* ---------- output: build the recap here, then send or download it ---------- */
+  function smallPhoto(dataUrl) {
+    /* pictures in the workbook are small: at most 400 px on the long side */
+    return new Promise(function (resolve, reject) {
+      var im = new Image();
+      im.onload = function () {
+        var s = Math.min(1, 400 / Math.max(im.naturalWidth, im.naturalHeight));
+        var c = document.createElement('canvas'); c.width = Math.max(1, Math.round(im.naturalWidth * s)); c.height = Math.max(1, Math.round(im.naturalHeight * s));
+        c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+        var url = c.toDataURL('image/jpeg', 0.85);
+        resolve({ base64: url.slice(url.indexOf(',') + 1), w: c.width, h: c.height });
+      };
+      im.onerror = function () { reject(new Error('photo')); };
+      im.src = dataUrl;
+    });
+  }
+  function makeRecap(date, markup) {
+    formMsg('Fetching the quotation and its AS400 data…');
+    return api('output_data', { quotation: S.qid }, 120000).then(function (data) {
+      if (!(data.lines || []).length) throw { error: 'local', text: 'This quotation has no lines yet.' };
+      var ids = [];
+      data.lines.forEach(function (l) { if (l.type === 'new') (l.photos || []).slice(0, 3).forEach(function (p) { ids.push(p); }); });
+      var photos = {}, i = 0;
+      function next() {
+        if (i >= ids.length) return Promise.resolve();
+        var id = ids[i++];
+        formMsg('Fetching photo ' + i + ' of ' + ids.length + '…');
+        var have = S.photos[id] ? Promise.resolve(S.photos[id]) : api('photo_get', { photo: id }, 60000).then(function (j) { return (S.photos[id] = 'data:' + (j.mime || 'image/jpeg') + ';base64,' + j.data); });
+        return have.then(smallPhoto).then(function (ph) { photos[id] = ph; }, function () { /* a photo that cannot be fetched is reported in the file's warnings */ }).then(next);
+      }
+      return next().then(function () {
+        formMsg('Building the file…');
+        return Recap.build(data, photos, markup, date).catch(function (e) {
+          throw (e && e.message === 'library') ? { error: 'local', text: 'The file builder could not be downloaded. Check the connection and try again.' } : { error: 'local', text: 'The file could not be built (' + ((e && e.message) || 'unknown reason') + ').' };
+        });
+      });
+    });
+  }
+  function output(mode) {
+    var sh = S.sheet; if (!sh || sh.type !== 'output' || S.saving) return;
+    var date = $('oDate').value, markup = Number(String($('oMarkup').value).replace('%', '').replace(',', '.').trim());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { formMsg('Choose the date for the recap.'); return; }
+    if (!isFinite(markup) || String($('oMarkup').value).trim() === '' || markup < 0 || markup >= 100) { formMsg('The mark-up must be a number from 0 to 99, for example 16.'); return; }
+    var to = Array.prototype.map.call(document.querySelectorAll('input[name="oTo"]:checked'), function (x) { return x.value; });
+    $('oOther').value.split(/[\s,;]+/).forEach(function (a) { if (a) to.push(a); });
+    var bad = to.filter(function (a) { return !/^[^\s@<>,;"']+@[^\s@<>,;"']+\.[A-Za-z]{2,}$/.test(a); });
+    if (mode === 'send' && !to.length) { formMsg('Choose at least one person, or type an email address.'); return; }
+    if (mode === 'send' && bad.length) { formMsg('This is not an email address: ' + bad.join(', ') + '.'); return; }
+    remember('scan.markup', String(markup));
+    var message = $('oMsg').value.trim();
+    setSaving(true, 'Starting…');
+    makeRecap(date, markup / 100).then(function (file) {
+      if (mode === 'download') {
+        var url = URL.createObjectURL(new Blob([file.buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+        var a = document.createElement('a'); a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+        S.saving = false; closeSheet(); toast('Recap downloaded');
+        if (file.warnings.length) openSheet({ type: 'info', title: 'Recap downloaded, with remarks', text: file.warnings.join(' ') });
+        return;
+      }
+      formMsg('Sending…');
+      return api('send', { quotation: S.qid, to: to, data: file.base64, by: S.name, message: message }, 180000).then(function (j) {
+        S.saving = false; closeSheet();
+        toast('Recap sent to ' + j.sent + (j.sent === 1 ? ' person' : ' people'));
+        if (file.warnings.length) openSheet({ type: 'info', title: 'Recap sent, with remarks', text: file.warnings.join(' ') });
+      });
+    }).catch(function (e) {
+      if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+      setSaving(false);
+      formMsg(e && e.error === 'local' ? e.text : e && e.error === 'network' ? 'No connection to the storage. Check the signal and try again.' : problemText(e));
+    });
   }
 
   /* ---------- rename, delete, trash can ---------- */
@@ -1588,6 +1820,10 @@ var ItemRead = (function () {
     else if (act === 'photo-drop') { keepNewItemFields(); sh.pending.splice(Number(b.getAttribute('data-i')), 1); openSheet(sh); }
     else if (act === 'sheet-close') closeSheet();
     else if (act === 'new-quote') openSheet({ type: 'newquote' });
+    else if (act === 'output') { if (S.quote) openSheet({ type: 'output' }); }
+    else if (act === 'output-send') output('send');
+    else if (act === 'output-download') output('download');
+    else if (act === 'pick-name') { $('gName').value = b.getAttribute('data-name'); $('gMsg').textContent = 'Tap Open.'; }
     else if (act === 'edit-quote') { if (S.quote) openSheet({ type: 'editquote' }); }
     else if (act === 'save-quote') saveQuote();
     else if (act === 'ask-delete') openSheet({ type: 'editquote', confirm: true });
