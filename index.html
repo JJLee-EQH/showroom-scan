@@ -649,7 +649,11 @@ var Recap = (function () {
           if (info.packaging) row.getCell(5).value = info.packaging;
           if (num(info.fob_usd) !== null) row.getCell(6).value = num(info.fob_usd);
           var cost = num(info.cost), cur = String(info.cost_currency || '').toUpperCase();
-          if (cost !== null && (cur === 'USD' || cur === 'RMB')) { row.getCell(7).value = cur === 'USD' ? cost : 0; row.getCell(8).value = cur === 'RMB' ? cost : 0; }
+          if (cost !== null && (cur === 'USD' || cur === 'RMB')) {
+            row.getCell(7).value = cur === 'USD' ? cost : 0; row.getCell(8).value = cur === 'RMB' ? cost : 0;
+            /* PRICE FOB shows the currency of the factory price: $ like FAC PRICE (USD), ¥ like FAC PRICE (RMB) */
+            row.getCell(9).numFmt = (cur === 'USD' ? pattern[6] : pattern[7]).numFmt;
+          }
           else if (cost) warnings.push(l.item + ': its factory price is in ' + (cur || 'an unknown currency') + ', which the recap has no column for, so FAC PRICE is left empty.');
           row.getCell(9).value = { formula: 'IF(AND(ISNUMBER(G' + r + '),G' + r + '<>0),G' + r + '/(1-$I$3),IF(AND(ISNUMBER(H' + r + '),H' + r + '<>0),H' + r + '/(1-$I$3),""))' };
           var port = String(info.port || '').trim();
