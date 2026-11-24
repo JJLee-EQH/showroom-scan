@@ -191,6 +191,14 @@ button { cursor: pointer; }
 .item-head { display: grid; grid-template-columns: 1fr auto; column-gap: 14px; align-items: start; }
 .item-head .pic { width: 120px; height: 120px; border-radius: 12px; background-color: #fff; border: 1px solid var(--line); }
 .pic-upload .progress { font-variant-numeric: tabular-nums; }
+.pic-bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 6px 0 10px; }
+.pic-bar span { display: block; height: 100%; background: var(--primary); transition: width .2s; }
+.pic-counts { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; margin: 6px 0 10px; font-size: 15px; font-variant-numeric: tabular-nums; }
+.pic-counts b { text-align: right; font-weight: 600; }
+.pic-hist { font-size: 14px; color: var(--muted); margin: 4px 0 0; padding-left: 18px; }
+.pic-note { display: block; margin-top: 6px; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pic-note.is-busy { color: var(--primary); }
+.pic-note button { font: inherit; color: inherit; text-decoration: underline; background: none; border: 0; padding: 0; }
 .pic-upload ul { margin: 6px 0 0; padding-left: 18px; max-height: 22vh; overflow-y: auto; font-size: 14px; color: var(--muted); }
 .pick span { color: var(--muted); font-size: 14px; }
 
@@ -1159,20 +1167,49 @@ var Recap = (function () {
                                            size and date are noted again; otherwise it is made small and uploaded.
      quiet: a background check (no sheet, the app stays usable). */
   var IMG_NAME = /\.(jpe?g|png|webp)$/i;
+  /* ----- what the picture upload is doing, and what it did -----
+     The last ten checks are kept on this computer (scan.picRuns), so the result of a check that ran by itself can be read later. */
+  function picRuns() { try { var r = JSON.parse(recall('scan.picRuns') || '[]'); return Array.isArray(r) ? r : []; } catch (e) { return []; } }
+  function whenText(t) { return new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+  function runLine(r) {
+    return whenText(r.at) + (r.watch ? ', folder check' : ', chosen by hand') + ': ' + r.saved + ' uploaded, ' + r.same + ' unchanged' +
+      (r.unmatched ? ', ' + r.unmatched + ' not matched' : '') + (r.failed ? ', ' + r.failed + ' with problems' : '') + (r.stopped ? ' (stopped)' : r.broken ? ' (interrupted)' : '');
+  }
   function picProgress() {
-    var u = S.upload; if (!u) return;
+    var u = S.upload;
+    var note = $('picNote');
+    if (note) { note.textContent = picNoteText(); note.classList.toggle('is-busy', !!(u && u.running)); }
+    if (!u) return;
     var el = document.querySelector('.pic-upload .progress'); if (el) el.textContent = u.status;
-    var note = $('picNote'); if (note) note.textContent = picNoteText();
+    var bar = document.querySelector('.pic-bar span'); if (bar) bar.style.width = (u.total ? Math.round(100 * u.done / u.total) : 0) + '%';
+    var c = document.querySelector('.pic-counts');
+    if (c) c.innerHTML = picCountsHtml(u);
+  }
+  function picCountsHtml(u) {
+    return '<span>Photos found</span><b>' + (u.found || u.total + u.unmatched.length + u.doubles) + '</b>' +
+      '<span>Uploaded (new or changed)</span><b>' + u.saved + '</b>' +
+      '<span>Unchanged, skipped</span><b>' + u.same + '</b>' +
+      '<span>Not matched to an item number</span><b>' + u.unmatched.length + '</b>' +
+      (u.doubles ? '<span>Older duplicates skipped</span><b>' + u.doubles + '</b>' : '') +
+      (u.failed.length ? '<span>With problems</span><b>' + u.failed.length + '</b>' : '') +
+      (u.inApp !== undefined ? '<span>Item pictures in the app now</span><b>' + u.inApp + '</b>' : '');
   }
   function picNoteText() {
     var u = S.upload;
-    if (u && u.running) return ' (checking photos: ' + u.done + ' of ' + u.total + ')';
-    if (S.picAsk) return ' (click to allow the folder check)';
-    return '';
+    if (u && u.running) return u.total ? 'Item pictures: checking ' + u.done + ' of ' + u.total + ' · ' + u.saved + ' uploaded' + (u.stop ? ' · stopping…' : '')
+                                       : 'Item pictures: looking through the folder · ' + (u.found || 0) + ' photos found';
+    if (S.picAsk) return 'Item pictures: the folder check is waiting for your permission. Click “Item pictures”.';
+    if (S.picError) return 'Item pictures: ' + S.picError;
+    var last = picRuns()[0];
+    return last ? 'Item pictures · last check ' + whenText(last.at) + ': ' + last.saved + ' uploaded, ' + last.same + ' unchanged' +
+      (last.failed ? ', ' + last.failed + ' with problems' : '') + (last.broken ? ' (interrupted)' : '') : '';
   }
   function runPictures(entries, quiet) {
     if (S.upload && S.upload.running) return Promise.resolve();
-    var u = S.upload = { running: true, stop: false, quiet: !!quiet, total: 0, done: 0, saved: 0, same: 0, doubles: 0, unmatched: [], failed: [], status: 'Checking what is already uploaded…' };
+    var listed = S.upload && S.upload.listing ? S.upload : null;          /* the folder listing that led to this run */
+    var found = listed ? listed.found : entries.length, watch = !!listed;
+    var u = S.upload = { running: true, stop: false, quiet: !!quiet, watch: watch, found: found, started: Date.now(), total: 0, done: 0, saved: 0, same: 0, doubles: 0, unmatched: [], failed: [], uploaded: [], status: 'Checking what is already uploaded…' };
+    S.picError = '';
     if (!quiet) S.saving = true;
     if (S.sheet && S.sheet.type === 'pictures') openSheet(S.sheet);
     var best = {}, order = [];
@@ -1187,6 +1224,11 @@ var Recap = (function () {
     function show() { u.status = 'Checked ' + u.done + ' of ' + u.total + ' · uploaded ' + u.saved + ' · unchanged ' + u.same + (u.failed.length ? ' · problems ' + u.failed.length : ''); picProgress(); }
     function finish(note) {
       u.running = false; if (!quiet) S.saving = false;
+      var run = { at: Date.now(), watch: u.watch, found: u.found, total: u.total, saved: u.saved, same: u.same, unmatched: u.unmatched.length, doubles: u.doubles,
+                  failed: u.failed.length, uploaded: u.uploaded.slice(0, 100), inApp: u.inApp, stopped: u.stop, broken: !!note, seconds: Math.round((Date.now() - u.started) / 1000) };
+      remember('scan.picRuns', JSON.stringify([run].concat(picRuns()).slice(0, 10)));
+      if (quiet && (u.saved || u.failed.length || note)) toast('Item pictures: ' + u.saved + ' uploaded' + (u.failed.length ? ', ' + u.failed.length + ' with problems' : '') + (note ? ' (interrupted)' : '') + '. Details under “Item pictures”.');
+      if (note && quiet) S.picError = 'the last folder check was interrupted. Click “Item pictures” for details.';
       var text = u.saved + ' uploaded, ' + u.same + ' unchanged' + (u.unmatched.length ? ', ' + u.unmatched.length + ' not matched to an item number' : '') +
         (u.doubles ? ', ' + u.doubles + ' older duplicate(s) skipped' : '') + (u.failed.length ? ', ' + u.failed.length + ' with problems' : '') + ' (' + u.done + ' of ' + u.total + ' items checked).';
       u.status = (u.stop ? 'Stopped. ' : note ? 'Interrupted. ' : 'Done. ') + text + (note ? ' ' + note : '');
@@ -1198,11 +1240,18 @@ var Recap = (function () {
     return api('pic_have').then(function (j) {
       var have = {}, i = 0, batch = [], size = 0, lastShow = 0;
       Object.keys(j.have || {}).forEach(function (k) { have[k.toUpperCase()] = j.have[k]; });
+      u.inApp = Object.keys(have).length;
       function send() {
         if (!batch.length) return Promise.resolve();
         var part = batch; batch = []; size = 0;
         return api('pic_put', { pictures: part }, 180000).then(function (r) {
           u.saved += r.saved || 0; u.same += r.same || 0;
+          var refused = (r.unknown || []).concat(r.bad || []).map(function (x) { return String(x).toUpperCase(); });
+          part.forEach(function (x) {
+            if (!x.data || refused.indexOf(x.item.toUpperCase()) >= 0) return;
+            u.uploaded.push(x.item);
+            if (!have[x.item.toUpperCase()]) { have[x.item.toUpperCase()] = [x.hash, x.stamp]; u.inApp++; }
+          });
           (r.unknown || []).forEach(function (x) { u.unmatched.push(x); });
           (r.bad || []).forEach(function (x) { u.failed.push(x + ' (refused by the Sheet)'); });
           show();
@@ -1265,7 +1314,10 @@ var Recap = (function () {
     for await (const h of dir.values()) {
       if (S.upload && S.upload.stop) return out;
       if (h.kind === 'directory') await listFolder(h, path + h.name + '/', out);
-      else if (IMG_NAME.test(h.name)) { const f = await h.getFile(); out.push({ name: f.name, path: path + f.name, size: f.size, changed: f.lastModified, file: f }); }
+      else if (IMG_NAME.test(h.name)) {
+        const f = await h.getFile(); out.push({ name: f.name, path: path + f.name, size: f.size, changed: f.lastModified, file: f });
+        if (S.upload) { S.upload.found = out.length; if (out.length % 50 === 0) { S.upload.status = 'Looking through the folder… ' + out.length + ' photos found'; picProgress(); } }
+      }
     }
     return out;
   }
@@ -1275,11 +1327,11 @@ var Recap = (function () {
     return picStore('get').then(function (dir) {
       if (!dir) return;
       return Promise.resolve(dir.queryPermission ? dir.queryPermission({ mode: 'read' }) : 'granted').then(function (p) {
-        if (p !== 'granted' && !asked) { S.picAsk = true; picProgress(); return 'ask'; }
+        if (p !== 'granted' && !asked) { S.picAsk = true; picProgress(); toast('Item pictures: the folder check needs your permission. Click “Item pictures”.'); return 'ask'; }
         return (p === 'granted' ? Promise.resolve(p) : dir.requestPermission({ mode: 'read' })).then(function (p2) {
           if (p2 !== 'granted') { if (asked) formMsg('The browser was not allowed to read the folder.'); return; }
           S.picAsk = false;
-          S.upload = { running: true, stop: false, quiet: !asked, total: 0, done: 0, saved: 0, same: 0, doubles: 0, unmatched: [], failed: [], status: 'Looking through the folder…' };
+          S.upload = { running: true, listing: true, stop: false, quiet: !asked, watch: true, found: 0, total: 0, done: 0, saved: 0, same: 0, doubles: 0, unmatched: [], failed: [], uploaded: [], status: 'Looking through the folder…' };
           if (S.sheet && S.sheet.type === 'pictures') openSheet(S.sheet);
           picProgress();
           return listFolder(dir, '', []).then(function (entries) { S.upload.running = false; return runPictures(entries, !asked); });
@@ -1287,6 +1339,8 @@ var Recap = (function () {
       });
     }).catch(function (e) {
       if (S.upload) S.upload.running = false;
+      S.picError = 'the photo folder could not be read (' + ((e && e.message) || 'unknown reason') + '). Click “Item pictures” and choose it again with “Watch another folder”.';
+      picProgress();
       if (asked) formMsg('The folder could not be read (' + ((e && e.message) || 'unknown reason') + '). Choose it again with Watch a folder.');
     });
   }
@@ -1371,14 +1425,14 @@ var Recap = (function () {
         ready: '<b>' + (S.quotes.length ? 'No quotation is open' : 'No quotation yet') + '</b>Start one when a customer arrives.<br><br><button class="btn primary" data-act="new-quote">New quotation</button>'
       }[S.status];
       list.innerHTML = (msg ? '<div class="state">' + msg + '</div>' : '') + (S.status === 'ready'
-        ? '<div class="foot">Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button><span id="picNote">' + esc(picNoteText()) + '</span>' : '') + '</div>' : '');
+        ? '<div class="foot">Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button><span id="picNote" class="pic-note' + (S.upload && S.upload.running ? ' is-busy' : '') + '">' + esc(picNoteText()) + '</span>' : '') + '</div>' : '');
       return;
     }
     var html = S.lines.map(rowHtml).join('');
     if (!S.lines.length) html = '<div class="state"><b>No lines yet</b>Scan a barcode, read a printed item number, find an item by typing, or add a new item with photos.</div>';
     html += '<div class="foot"><button class="text-btn" data-act="new-quote">New quotation</button></div>' +
       '<div class="foot">' + (S.cat.state === 'ready' ? 'Item list: ' + S.cat.items.length.toLocaleString() + ' items' + (S.cat.at ? ', refreshed ' + new Date(S.cat.at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '') + '. ' : '') +
-      'Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button><span id="picNote">' + esc(picNoteText()) + '</span>' : '') + '</div>';
+      'Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button><span id="picNote" class="pic-note' + (S.upload && S.upload.running ? ' is-busy' : '') + '">' + esc(picNoteText()) + '</span>' : '') + '</div>';
     list.innerHTML = html;
   }
 
@@ -1539,9 +1593,21 @@ var Recap = (function () {
               : '<div class="sheet-meta">Choose <b>Watch a folder</b> once, and this computer keeps the pictures up to date by itself whenever the app is open here.</div>')
           : '<div class="sheet-meta">This browser cannot watch a folder by itself. Use Chrome or Edge on a computer for that; choosing photos by hand works here.</div>') +
         (u ? '<p class="progress sheet-meta">' + esc(u.status) + '</p>' +
+             (u.running || u.total ? '<div class="pic-bar"><span style="width:' + (u.total ? Math.round(100 * u.done / u.total) : 0) + '%"></span></div>' : '') +
+             '<div class="pic-counts">' + picCountsHtml(u) + '</div>' +
+             (u.uploaded && u.uploaded.length ? '<div class="sheet-meta">Uploaded this time (' + u.saved + '):</div><ul>' + u.uploaded.slice(0, 60).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + (u.saved > 60 ? '<li>and ' + (u.saved - 60) + ' more</li>' : '') + '</ul>' : '') +
              (u.unmatched.length ? '<div class="sheet-meta warn">Not matched to an item number (' + u.unmatched.length + '):</div><ul>' + u.unmatched.slice(0, 40).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + (u.unmatched.length > 40 ? '<li>…</li>' : '') + '</ul>' : '') +
              (u.failed.length ? '<div class="sheet-meta warn">Could not be read or saved (' + u.failed.length + '):</div><ul>' + u.failed.slice(0, 40).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>' : '')
-           : (last ? '<p class="progress sheet-meta">Last check ' + esc(new Date(last.at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) + ': ' + esc(last.text) + '</p>' : '')) +
+           : '') +
+        (u && u.running ? '' : (function () {
+          var runs = picRuns();
+          if (!runs.length) return '';
+          var r0 = runs[0];
+          return (u ? '' : '<div class="sheet-meta"><b>Last check</b> ' + esc(runLine(r0)) + '.</div>' +
+                   (r0.uploaded && r0.uploaded.length ? '<div class="sheet-meta">Uploaded then (' + r0.saved + '):</div><ul>' + r0.uploaded.slice(0, 60).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + (r0.saved > 60 ? '<li>and ' + (r0.saved - 60) + ' more</li>' : '') + '</ul>' : '') +
+                   (r0.inApp !== undefined ? '<div class="sheet-meta">Item pictures in the app: <b>' + r0.inApp + '</b></div>' : '')) +
+            (runs.length > 1 ? '<div class="sheet-meta">Earlier checks on this computer:</div><ul class="pic-hist">' + runs.slice(1, 6).map(function (r) { return '<li>' + esc(runLine(r)) + '</li>'; }).join('') + '</ul>' : '');      /* the newest one is shown above */
+        })()) +
         '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
         (u && u.running
           ? '<button class="btn danger" data-act="pic-stop">Stop</button>' + (u.quiet ? '<button class="btn" data-act="sheet-close">Close (it keeps running)</button>' : '')
