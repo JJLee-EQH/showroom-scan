@@ -6,7 +6,7 @@
      Paste the web app URL from Apps Script between the quotes (it ends in /exec).
      ==================================================================================== -->
 <script>
-var API_URL = 'https://script.google.com/macros/s/AKfycbzbujNuJRmDb2FY74qevwlMQ9zqzirLlw_IytFyZOWJKWiNQ9KfNJCXBixhpn_iqew32g/exec';
+var API_URL = 'https://script.google.com/macros/s/AKfycbyx9jF4vB6t7J9Yj1uj0WdouRTxrtckOZpQz2u54t6WQryF2Nq0byDcCMWx7_x3j63qcg/exec';
 var REFRESH_MS = 20000;   /* how often an open phone re-reads the lines, in milliseconds */
 </script>
 <meta charset="utf-8">
@@ -290,14 +290,17 @@ button { cursor: pointer; }
 <input id="newPhotoIn" type="file" accept="image/*" multiple hidden>
 
 <div id="gate" class="gate" hidden>
-  <form id="gateForm" class="gate-card" autocomplete="off">
+  <form id="gateForm" class="gate-card">
     <h1>Showroom scan</h1>
-    <p>Enter the team access code to open the quotations.</p>
-    <label class="field"><span>Team access code</span><input id="gCode" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-    <label class="field"><span>Your name</span><input id="gName" type="text" autocomplete="name" maxlength="60"></label>
+    <p id="gIntro">Sign in with your name and your password.</p>
+    <label class="field" id="gCodeBox" hidden><span>Invitation code (ask an admin)</span><input id="gCode" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label class="field"><span>Your name</span><input id="gName" type="text" autocomplete="username" maxlength="60"></label>
     <div id="gPeople" class="chips" hidden></div>
+    <label class="field"><span id="gPassLabel">Password</span><input id="gPass" type="password" autocomplete="current-password"></label>
+    <label class="field" id="gPass2Box" hidden><span>The same password again</span><input id="gPass2" type="password" autocomplete="new-password"></label>
     <p class="form-msg" id="gMsg" role="alert"></p>
-    <button class="btn primary" type="submit" id="gGo">Open</button>
+    <button class="btn primary" type="submit" id="gGo">Sign in</button>
+    <button class="text-btn" type="button" id="gMode" data-act="gate-mode">First time here? Create your password</button>
   </form>
 </div>
 
@@ -709,7 +712,7 @@ var Recap = (function () {
     code: '', name: '',
     status: 'gate',               // unconfigured | gate | loading | ready | error
     problem: '',
-    quotes: [], qid: null, quote: null, lines: [], trash: 0, people: [], cache: {}, stamp: '', g: '', recent: [], checking: false,
+    quotes: [], qid: null, quote: null, lines: [], trash: 0, people: [], team: [], admin: false, token: '', gateNew: false, cache: {}, stamp: '', g: '', recent: [], checking: false,
     sheet: null, saving: false,
     seq: 0, syncedAt: 0, offline: false,
     cat: { at: '', items: [], byEan: {}, byItem: {}, upper: [], state: 'none' },   // none | loading | ready | empty | failed
@@ -742,7 +745,7 @@ var Recap = (function () {
 
   /* ---------- storage (Google Sheet behind the web app URL) ---------- */
   function api(action, extra, timeoutMs) {
-    var body = { code: S.code, action: action };
+    var body = { token: S.token, action: action };
     Object.keys(extra || {}).forEach(function (k) { body[k] = extra[k]; });
     var ctl = ('AbortController' in window) ? new AbortController() : null;
     var timer = setTimeout(function () { if (ctl) ctl.abort(); }, timeoutMs || 30000);
@@ -765,7 +768,15 @@ var Recap = (function () {
   }
   function problemText(e) {
     var c = e && e.error;
-    if (c === 'bad_code') return 'That access code isn’t right. Ask for the current one.';
+    if (c === 'bad_code') return 'That invitation code isn’t right. Ask an admin for the current one.';
+    if (c === 'signed_out') return 'Please sign in again.';
+    if (c === 'bad_login') return 'The name or the password isn’t right.';
+    if (c === 'no_password') return 'This name has no password yet. Tap “First time here?” below and create one.';
+    if (c === 'has_password') return 'This name already has a password. Sign in with it, or ask an admin to reset it.';
+    if (c === 'no_such_person') return 'That name isn’t in the team list. Ask an admin to add you to the tab “People”.';
+    if (c === 'weak_password') return 'Use at least 8 characters for the password.';
+    if (c === 'locked') return 'Too many wrong passwords. Try again in ' + (e.minutes || 15) + ' minutes, or ask an admin to reset the password.';
+    if (c === 'not_yours') return 'Only the owner of this quotation or an admin can do that.';
     if (c === 'not_set_up') return 'The storage has no access code yet. In the Sheet, use Scan tool > 2. Set the team access code.';
     if (c === 'busy') return 'Someone else is saving at this moment. Save again.';
     if (c === 'not_found') return 'That line or quotation is no longer in the Sheet. Refresh the list.';
@@ -912,7 +923,7 @@ var Recap = (function () {
   /* a list answer: the lines of quotations whose stamp had changed, and fresh names for the others */
   function fillCache(j) {
     (j.quotations || []).forEach(function (q) {
-      var meta = { id: q.id, customer: q.customer, note: q.note, by: q.by, at: q.at };
+      var meta = { id: q.id, customer: q.customer, note: q.note, by: q.by, at: q.at, owner: q.owner, shared: q.shared || [], manage: !!q.manage };
       if (j.lines && j.lines[q.id]) S.cache[q.id] = { quotation: meta, lines: j.lines[q.id], stamp: q.stamp };
       else if (S.cache[q.id]) S.cache[q.id].quotation = meta;
     });
@@ -931,7 +942,7 @@ var Recap = (function () {
     }).then(done, function (e) { var mine = seq === S.seq; done(); if (mine) fail(e); });
   }
   function fail(e) {
-    if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+    if (e && e.error === 'signed_out') { showGate(problemText(e)); return; }
     if (e && e.error === 'not_found' && S.qid) {             /* the open quotation was renamed or deleted on another phone */
       dropRecent(S.qid);
       S.quote = null; S.qid = null; S.lines = []; forget('scan.qid');
@@ -954,7 +965,8 @@ var Recap = (function () {
     return api('list', { full: true, first: true, have: haveMap(wanted) }).then(function (j) {
       if (seq !== S.seq) return;
       S.quotes = j.quotations || []; S.g = j.g || '';
-      S.trash = j.trash || 0; S.people = j.people || [];
+      S.trash = j.trash || 0; S.people = j.people || []; S.team = j.team || [];
+      if (j.me) { S.name = j.me.name; S.admin = !!j.me.admin; remember('scan.name', S.name); }
       syncCatalog(j.catalog || null);
       fillCache(j);
       var pick = null;
@@ -984,7 +996,8 @@ var Recap = (function () {
       if (seq !== S.seq || S.saving || loadsRunning || asked !== S.qid) return;            /* something newer happened meanwhile */
       S.offline = false; S.syncedAt = Date.now();
       if (j.same) { if (S.problem || $('notice').textContent) render(); return; }
-      S.g = j.g || ''; S.quotes = j.quotations || []; S.trash = j.trash || 0; S.people = j.people || []; syncCatalog(j.catalog || null);
+      S.g = j.g || ''; S.quotes = j.quotations || []; S.trash = j.trash || 0; S.people = j.people || []; S.team = j.team || []; syncCatalog(j.catalog || null);
+      if (j.me) { S.name = j.me.name; S.admin = !!j.me.admin; }
       fillCache(j);
       if (asked) {
         if (!S.quotes.some(function (q) { return q.id === asked; })) { fail({ error: 'not_found' }); return; }
@@ -997,43 +1010,81 @@ var Recap = (function () {
 
   /* ---------- access code ---------- */
   function showGate(msg) {
-    S.status = 'gate'; S.code = ''; forget('scan.code');
+    S.status = 'gate'; S.token = ''; forget('scan.token'); forget('scan.code');
     S.quote = null; S.quotes = []; S.lines = []; S.cache = {}; S.g = '';
     if (S.scan.open) closeScan();
     S.sheet = null; $('veil').hidden = true;
     $('gName').value = S.name || recall('scan.name');
-    $('gCode').value = '';
+    $('gCode').value = ''; $('gPass').value = ''; $('gPass2').value = '';
+    gateMode(false);
     $('gMsg').textContent = msg || '';
-    $('gPeople').hidden = true; $('gPeople').innerHTML = '';
     $('gate').hidden = false;
     render();
-    try { ($('gName').value ? $('gCode') : $('gName')).focus(); } catch (e) { /* focus is a nicety */ }
+    try { ($('gName').value ? $('gPass') : $('gName')).focus(); } catch (e) { /* focus is a nicety */ }
+  }
+  /* the sign-in screen has two faces: signing in, and creating a password the first time */
+  function gateMode(isNew) {
+    S.gateNew = !!isNew;
+    $('gIntro').textContent = isNew ? 'Create your own password. You need the invitation code once; after that you sign in with your name and password.' : 'Sign in with your name and your password.';
+    $('gCodeBox').hidden = !isNew; $('gPass2Box').hidden = !isNew;
+    $('gPassLabel').textContent = isNew ? 'Choose a password (at least 8 characters)' : 'Password';
+    $('gPass').setAttribute('autocomplete', isNew ? 'new-password' : 'current-password');
+    $('gGo').textContent = isNew ? 'Create password' : 'Sign in';
+    $('gMode').textContent = isNew ? 'I already have a password' : 'First time here? Create your password';
+    $('gPeople').hidden = true; $('gPeople').innerHTML = ''; $('gMsg').textContent = '';
+  }
+  function signedIn(j, name) {
+    S.token = j.token; S.name = (j.me && j.me.name) || name; S.admin = !!(j.me && j.me.admin);
+    remember('scan.token', S.token); remember('scan.name', S.name);
+    $('gGo').disabled = false; $('gate').hidden = true; $('gMsg').textContent = ''; $('gPass').value = ''; $('gPass2').value = ''; $('gCode').value = '';
+    S.status = 'loading'; render();
+    loadAll();
   }
   function submitGate() {
-    var code = $('gCode').value.trim(), name = $('gName').value.trim();
-    if (!code) { $('gMsg').textContent = 'Type the team access code.'; return; }
-    if (!name) {                                     /* no name yet: check the code and offer the names from the People list */
-      $('gGo').disabled = true; $('gMsg').textContent = 'Checking…';
-      S.code = code;
-      api('list').then(function (j) {
-        S.code = ''; $('gGo').disabled = false;
-        var people = j.people || [];
-        $('gPeople').innerHTML = people.map(function (x) { return '<button type="button" data-act="pick-name" data-name="' + esc(x.name) + '">' + esc(x.name) + '</button>'; }).join('');
-        $('gPeople').hidden = !people.length;
-        $('gMsg').textContent = people.length ? 'Tap your name, or type it, then tap Open.' : 'Type your name, so colleagues see who added a line.';
-      }).catch(function (e) { S.code = ''; $('gGo').disabled = false; $('gMsg').textContent = problemText(e); });
+    var name = $('gName').value.trim(), pass = $('gPass').value;
+    function busy(on, text) { $('gGo').disabled = on; if (text !== undefined) $('gMsg').textContent = text; }
+    function failed(e) { busy(false, e && e.error === 'network' ? 'No connection. Check the signal and try again.' : problemText(e)); }
+    S.token = '';
+    if (!S.gateNew) {
+      if (!name) { $('gMsg').textContent = 'Type your name.'; return; }
+      if (!pass) { $('gMsg').textContent = 'Type your password.'; return; }
+      busy(true, 'Signing in…');
+      api('login', { name: name, password: pass }).then(function (j) { signedIn(j, name); }).catch(failed);
       return;
     }
-    $('gGo').disabled = true; $('gMsg').textContent = 'Checking…';
-    S.code = code; S.name = name;
-    api('list').then(function () {
-      remember('scan.code', code); remember('scan.name', name);
-      $('gGo').disabled = false; $('gate').hidden = true; $('gMsg').textContent = '';
-      S.status = 'loading'; render();
-      loadAll();
-    }).catch(function (e) {
-      S.code = ''; $('gGo').disabled = false; $('gMsg').textContent = problemText(e);
-    });
+    var code = $('gCode').value.trim();
+    if (!code) { $('gMsg').textContent = 'Type the invitation code.'; return; }
+    if (!name) {                                     /* no name yet: check the code and offer the names that have no password yet */
+      busy(true, 'Checking…');
+      api('names', { code: code }).then(function (j) {
+        var names = j.names || [];
+        $('gPeople').innerHTML = names.map(function (n) { return '<button type="button" data-act="pick-name" data-name="' + esc(n) + '">' + esc(n) + '</button>'; }).join('');
+        $('gPeople').hidden = !names.length;
+        busy(false, names.length ? 'Tap your name, then choose a password.' : 'Everyone on the team list already has a password. Ask an admin to add you, or to reset yours.');
+      }).catch(failed);
+      return;
+    }
+    if (pass.length < 8) { $('gMsg').textContent = 'Use at least 8 characters for the password.'; return; }
+    if (pass !== $('gPass2').value) { $('gMsg').textContent = 'The two passwords are not the same.'; return; }
+    busy(true, 'Creating your password…');
+    api('register', { code: code, name: name, password: pass }).then(function (j) { signedIn(j, name); }).catch(failed);
+  }
+  function signOut() {
+    var t = S.token;
+    if (t) api('logout').catch(function () { /* signing out locally is what counts */ });
+    showGate('');
+  }
+  function changePassword() {
+    var sh = S.sheet; if (!sh || sh.type !== 'password' || S.saving) return;
+    var old = $('pOld').value, next = $('pNew').value;
+    if (!old) { formMsg('Type your current password.'); return; }
+    if (next.length < 8) { formMsg('Use at least 8 characters for the new password.'); return; }
+    if (next !== $('pNew2').value) { formMsg('The two new passwords are not the same.'); return; }
+    setSaving(true, 'Saving…');
+    api('password', { old: old, next: next }).then(function (j) {
+      S.token = j.token; remember('scan.token', S.token); S.saving = false;
+      closeSheet(); toast('Password changed. Other devices have to sign in again.');
+    }).catch(function (e) { writeFailed(e, 'changed'); });
   }
 
   /* ---------- rendering ---------- */
@@ -1055,18 +1106,23 @@ var Recap = (function () {
       (text ? '<span class="row-remark">' + esc(text) + '</span>' : '') +
       '</button>';
   }
+  function isMine(q) { return String(q.owner || '').trim().toLowerCase() === String(S.name || '').trim().toLowerCase(); }
+  function ownerText(q) {
+    if (!isMine(q)) return q.owner ? (q.manage ? ', owner ' + q.owner : ', shared by ' + q.owner) : '';
+    return (q.shared && q.shared.length) ? ', yours, shared with ' + q.shared.join(', ') : ', yours';
+  }
   function render() {
     var sel = $('quoteSel'), q = S.quote;
     var canAdd = CONNECTED && S.status === 'ready';
     sel.innerHTML = (S.quotes.length
-      ? (q ? '' : '<option value="">Choose a quotation</option>') + S.quotes.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === S.qid ? ' selected' : '') + '>' + esc(x.customer) + '</option>'; }).join('')
+      ? (q ? '' : '<option value="">Choose a quotation</option>') + S.quotes.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === S.qid ? ' selected' : '') + '>' + esc(x.customer) + (isMine(x) ? '' : ' · ' + esc(x.owner || '')) + '</option>'; }).join('')
       : '<option value="">Showroom scan</option>') + (canAdd ? '<option value="__new__">New quotation…</option>' : '') +
       (canAdd && S.trash ? '<option value="__trash__">Trash can (' + S.trash + ')…</option>' : '');
     sel.disabled = !canAdd;
-    $('customer').textContent = q ? q.id + (q.by ? ', started by ' + q.by : '') + (S.checking ? ' · Checking for changes…' : '') : '';
+    $('customer').textContent = q ? q.id + ownerText(q) + (S.checking ? ' · Checking for changes…' : '') : '';
     $('progress').innerHTML = q ? '<b>' + S.lines.length + '</b> ' + (S.lines.length === 1 ? 'line' : 'lines') : '';
     $('refreshBtn').hidden = !(S.status === 'ready' || S.status === 'error') || !CONNECTED;
-    $('editBtn').hidden = !q;
+    $('editBtn').hidden = !q || !q.manage;                 /* renaming, sharing and deleting are for the owner and admins */
     $('dock').hidden = !q;
     var notes = [];
     if (S.offline) notes.push('No connection to the storage. Showing what was loaded at ' + clock(S.syncedAt) + '; nothing can be saved until the signal is back.');
@@ -1082,14 +1138,15 @@ var Recap = (function () {
         error: '<b>The quotations can’t be loaded</b>' + esc(S.problem) + '<br><br><button class="btn" data-act="refresh">Try again</button>',
         ready: '<b>' + (S.quotes.length ? 'No quotation is open' : 'No quotation yet') + '</b>Start one when a customer arrives.<br><br><button class="btn primary" data-act="new-quote">New quotation</button>'
       }[S.status];
-      list.innerHTML = msg ? '<div class="state">' + msg + '</div>' : '';
+      list.innerHTML = (msg ? '<div class="state">' + msg + '</div>' : '') + (S.status === 'ready'
+        ? '<div class="foot">Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button></div>' : '');
       return;
     }
     var html = S.lines.map(rowHtml).join('');
     if (!S.lines.length) html = '<div class="state"><b>No lines yet</b>Scan a barcode, read a printed item number, find an item by typing, or add a new item with photos.</div>';
     html += '<div class="foot"><button class="text-btn" data-act="new-quote">New quotation</button></div>' +
       '<div class="foot">' + (S.cat.state === 'ready' ? 'Item list: ' + S.cat.items.length.toLocaleString() + ' items' + (S.cat.at ? ', refreshed ' + new Date(S.cat.at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '') + '. ' : '') +
-      'Saving as <b>' + esc(S.name) + '</b>. <button class="text-btn" data-act="signout">Change name or code</button></div>';
+      'Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button></div>';
     list.innerHTML = html;
   }
 
@@ -1194,10 +1251,23 @@ var Recap = (function () {
         html = '<div class="sheet-no">Edit quotation</div>' +
           '<label class="field"><span>Customer</span><input id="fCustomer2" autocomplete="off" maxlength="120" value="' + esc(sh.customer !== undefined ? sh.customer : S.quote.customer) + '"></label>' +
           '<label class="field"><span>Quotation number</span><input id="fNumber" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="40" value="' + esc(sh.number !== undefined ? sh.number : S.quote.id) + '"></label>' +
+          '<div class="field"><span>Shared with (they can see it and work on its lines)</span>' + (function () {
+            var others = S.team.filter(function (n) { return n.trim().toLowerCase() !== String(S.quote.owner || '').trim().toLowerCase(); });
+            var on = (sh.share || S.quote.shared || []).map(function (n) { return n.toLowerCase(); });
+            return others.length ? others.map(function (n) { return '<label class="check"><input type="checkbox" name="fShare" value="' + esc(n) + '"' + (on.indexOf(n.toLowerCase()) >= 0 ? ' checked' : '') + '><span>' + esc(n) + '</span></label>'; }).join('')
+              : '<div class="sheet-meta">Nobody else is in the team list yet.</div>';
+          })() + '</div>' +
           '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
           '<button class="btn primary" data-act="save-quote">Save changes</button><button class="btn" data-act="sheet-close">Cancel</button>' +
           '<button class="btn danger" data-act="ask-delete">Delete quotation</button></div>';
       }
+    } else if (sh.type === 'password') {
+      html = '<div class="sheet-no">Change password</div><div class="sheet-meta">Afterwards your other devices have to sign in again with the new password.</div>' +
+        '<label class="field"><span>Current password</span><input id="pOld" type="password" autocomplete="current-password"></label>' +
+        '<label class="field"><span>New password (at least 8 characters)</span><input id="pNew" type="password" autocomplete="new-password"></label>' +
+        '<label class="field"><span>The new password again</span><input id="pNew2" type="password" autocomplete="new-password"></label>' +
+        '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
+        '<button class="btn primary" data-act="save-password">Change password</button><button class="btn" data-act="sheet-close">Cancel</button></div>';
     } else if (sh.type === 'trash') {
       html = '<div class="sheet-no">Trash can</div><div class="sheet-meta">Deleted quotations stay here with all their lines and photos until someone puts them back or deletes them.</div>' +
         (sh.items === undefined ? '<div class="sheet-meta">Loading…</div>' : !sh.items.length ? '<div class="sheet-meta">The trash can is empty.</div>' :
@@ -1246,7 +1316,7 @@ var Recap = (function () {
   function formMsg(t) { var m = $('fMsg'); if (m) m.textContent = t || ''; }
   function writeFailed(e, what) {
     S.seq++;
-    if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+    if (e && e.error === 'signed_out') { showGate(problemText(e)); return; }
     setSaving(false);
     formMsg(e && e.error === 'network' ? 'Not ' + what + ': no connection to the storage. Check the signal and try again.' : problemText(e));
   }
@@ -1397,7 +1467,7 @@ var Recap = (function () {
     }).catch(function (e) {
       if (e && e.error === 'conflict' && S.sheet === sh) { gotConflict(sh, e); return; }
       S.seq++; render();
-      if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+      if (e && e.error === 'signed_out') { showGate(problemText(e)); return; }
       var ownLine = lineById(id); if (ownLine) sh.seen = ownLine.updatedAt || ownLine.at || '';      /* our own save moved the version on */
       var left = sh.pending.length;
       if (S.sheet === sh) { S.saving = false; openSheet(sh); formMsg((sh.id && left ? 'The line is saved, but ' + left + (left === 1 ? ' photo is' : ' photos are') + ' not yet. ' : 'Not saved. ') + (e && e.error === 'network' ? 'No connection to the storage. Check the signal and save again.' : problemText(e))); }
@@ -1482,7 +1552,7 @@ var Recap = (function () {
         if (file.warnings.length) openSheet({ type: 'info', title: 'Recap sent, with remarks', text: file.warnings.join(' ') });
       });
     }).catch(function (e) {
-      if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+      if (e && e.error === 'signed_out') { showGate(problemText(e)); return; }
       setSaving(false);
       formMsg(e && e.error === 'local' ? e.text : e && e.error === 'network' ? 'No connection to the storage. Check the signal and try again.' : problemText(e));
     });
@@ -1492,21 +1562,28 @@ var Recap = (function () {
   function saveQuote() {
     var sh = S.sheet; if (!sh || sh.type !== 'editquote' || S.saving) return;
     var customer = $('fCustomer2').value.replace(/\s+/g, ' ').trim(), number = $('fNumber').value.replace(/\s+/g, ' ').trim();
-    sh.customer = customer; sh.number = number;
+    var share = Array.prototype.map.call(document.querySelectorAll('input[name="fShare"]:checked'), function (x) { return x.value; });
+    sh.customer = customer; sh.number = number; sh.share = share;
     if (!customer) { formMsg('Type the customer’s name.'); return; }
     if (!/^[A-Za-z0-9][A-Za-z0-9 ._\/-]{2,39}$/.test(number)) { formMsg('A quotation number has 3 to 40 letters, digits, spaces, dots, dashes or slashes, and starts with a letter or digit.'); return; }
-    if (customer === S.quote.customer && number === S.quote.id) { closeSheet(); return; }
+    var norm = function (l) { return l.map(function (n) { return n.toLowerCase(); }).sort().join('|'); };
+    var metaChanged = customer !== S.quote.customer || number !== S.quote.id, shareChanged = norm(share) !== norm(S.quote.shared || []);
+    if (!metaChanged && !shareChanged) { closeSheet(); return; }
     S.seq++;
     setSaving(true, 'Saving…');
-    api('quote_edit', { quotation: S.qid, customer: customer, newId: number, by: S.name }).then(function (j) {
-      S.seq++; S.saving = false;
-      closeSheet(); toast('Quotation saved');
-      var was = S.qid;
+    var was = S.qid;
+    var first = metaChanged ? api('quote_edit', { quotation: was, customer: customer, newId: number }) : Promise.resolve({ quotation: S.quote, stamp: S.stamp });
+    first.then(function (j) {
       if (j.quotation.id !== was) {                    /* the copy follows the new number */
         if (S.cache[was]) { S.cache[j.quotation.id] = S.cache[was]; delete S.cache[was]; }
         S.recent = S.recent.map(function (x) { return x === was ? j.quotation.id : x; }); remember('scan.recent', JSON.stringify(S.recent));
       }
       S.quote = j.quotation; S.qid = j.quotation.id; if (j.stamp) S.stamp = j.stamp; keepCurrent(); remember('scan.qid', S.qid);
+      return shareChanged ? api('share', { quotation: S.qid, 'with': share }) : j;
+    }).then(function (j) {
+      if (j.quotation) S.quote = j.quotation; if (j.stamp) S.stamp = j.stamp; keepCurrent();
+      S.seq++; S.saving = false;
+      closeSheet(); toast(shareChanged && !metaChanged ? (share.length ? 'Shared with ' + share.join(', ') : 'No longer shared') : 'Quotation saved');
       return loadAll(S.qid);
     }).catch(function (e) { writeFailed(e, 'saved'); });
   }
@@ -1710,7 +1787,7 @@ var Recap = (function () {
       showNote('Added ' + it.item, it.name + (VIA[via] ? ' (' + VIA[via].charAt(0).toLowerCase() + VIA[via].slice(1) + ')' : ''), [{ act: 'note-undo', id: line.id, label: 'Undo' }, { act: 'note-edit', id: line.id, label: 'Quantity / note' }]);
     }).catch(function (e) {
       S.seq++;
-      if (e && e.error === 'bad_code') { showGate(problemText(e)); return; }
+      if (e && e.error === 'signed_out') { showGate(problemText(e)); return; }
       S.scan.retry = { it: it, via: via, code: code };
       delete S.scan.recent[String(it.item).toUpperCase()]; S.scan.coolUntil = Date.now() + 6000;
       showNote('Not added: ' + it.item, e && e.error === 'network' ? 'No connection to the storage. Check the signal.' : problemText(e), [{ act: 'note-retry', label: 'Try again' }], true, true);
@@ -1972,7 +2049,10 @@ var Recap = (function () {
     else if (act === 'output') { if (S.quote) openSheet({ type: 'output' }); }
     else if (act === 'output-send') output('send');
     else if (act === 'output-download') output('download');
-    else if (act === 'pick-name') { $('gName').value = b.getAttribute('data-name'); $('gMsg').textContent = 'Tap Open.'; }
+    else if (act === 'pick-name') { $('gName').value = b.getAttribute('data-name'); $('gMsg').textContent = 'Now choose a password.'; try { $('gPass').focus(); } catch (e) { /* focus is a nicety */ } }
+    else if (act === 'gate-mode') gateMode(!S.gateNew);
+    else if (act === 'change-password') openSheet({ type: 'password' });
+    else if (act === 'save-password') changePassword();
     else if (act === 'edit-quote') { if (S.quote) openSheet({ type: 'editquote' }); }
     else if (act === 'save-quote') saveQuote();
     else if (act === 'ask-delete') openSheet({ type: 'editquote', confirm: true });
@@ -1983,7 +2063,7 @@ var Recap = (function () {
     else if (act === 'purge-quote') purgeQuote(b.getAttribute('data-id'));
     else if (act === 'create-quote') createQuote();
     else if (act === 'refresh') { loadAll().then(function () { if (S.status === 'ready' && !S.offline) toast('Refreshed'); }); }
-    else if (act === 'signout') showGate('');
+    else if (act === 'signout') signOut();
   });
   document.addEventListener('input', function (ev) { if (ev.target && ev.target.id === 'findIn') renderFind(); });
   document.addEventListener('keydown', function (ev) {
@@ -2009,9 +2089,9 @@ var Recap = (function () {
 
   /* ---------- start ---------- */
   if (!CONNECTED) { S.status = 'unconfigured'; render(); return; }
-  S.code = recall('scan.code'); S.name = recall('scan.name');
+  S.token = recall('scan.token'); S.name = recall('scan.name'); forget('scan.code');
   loadRecent();
-  if (S.code && S.name) { S.status = 'loading'; render(); loadAll(); }
+  if (S.token) { S.status = 'loading'; render(); loadAll(); }
   else showGate('');
 })();
 </script>
