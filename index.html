@@ -1283,6 +1283,10 @@ var Recap = (function () {
                   '<button class="btn danger" data-act="purge-ask" data-id="' + esc(x.id) + '">Delete</button></div>') + '</div>';
           }).join('')) +
         '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions"><button class="btn" data-act="sheet-close">Close</button></div>';
+    } else if (sh.type === 'leave') {
+      html = '<div class="sheet-no">Leave Showroom scan?</div><div class="sheet-meta">You pressed the phone\u2019s or the browser\u2019s back button. ' +
+        'Everything you saved is kept; you can come back any time. To close a screen inside the app, use its Close or Cancel button instead.</div>' +
+        '<div class="sheet-actions"><button class="btn primary" data-act="sheet-close">Stay in the app</button><button class="btn" data-act="leave-app">Leave</button></div>';
     } else if (sh.type === 'info') {
       html = '<div class="sheet-no">' + esc(sh.title) + '</div><div class="sheet-meta">' + esc(sh.text) + '</div>' +
         '<div class="sheet-actions"><button class="btn primary" data-act="sheet-close">OK</button></div>';
@@ -2017,6 +2021,46 @@ var Recap = (function () {
   }
 
   /* ---------- events ---------- */
+  /* ---------- the back button ----------
+     The browser's or the phone's back button would leave the app. One extra history entry ("guard") catches it: pressing
+     back first closes whatever is open in the app (a sheet, the scanner), and on the main screen it asks before leaving.
+     Pressing back once more while that question is shown leaves. The guard is set on a tap, because browsers ignore
+     history entries that a page adds without the user doing anything. */
+  var Back = { armed: false, leaving: false };
+  function armBack() {
+    if (Back.armed || Back.leaving) return;
+    try { history.pushState({ scanGuard: 1 }, '', location.href); Back.armed = true; } catch (e) { /* history not available: nothing to guard */ }
+  }
+  function leaveApp() {
+    Back.leaving = true;
+    if (S.sheet) { S.sheet = null; $('veil').hidden = true; }
+    if (S.scan.open) closeScan();
+    var here = location.href;
+    try { history.go(Back.armed ? -2 : -1); } catch (e) { /* nothing to go back to */ }
+    setTimeout(function () {                            /* still here: the app was opened directly, there is no page before it */
+      if (location.href === here && !document.hidden) {
+        Back.leaving = false; Back.armed = false; armBack();
+        toast('There is no page to go back to. Close the tab or switch apps to leave.');
+      }
+    }, 700);
+  }
+  window.addEventListener('popstate', function () {
+    if (Back.leaving) return;
+    Back.armed = false;
+    if (!$('gate').hidden) { leaveApp(); return; }      /* the sign-in screen: nothing to lose */
+    if (S.sheet && S.sheet.type === 'leave') { leaveApp(); return; }      /* back twice: the person really wants to leave */
+    if (S.sheet && S.saving) { armBack(); toast('Saving, one moment…'); return; }
+    if (S.sheet) { closeSheet(); render(); armBack(); return; }
+    if (S.scan.open) { closeScan(); armBack(); return; }
+    openSheet({ type: 'leave' }); armBack();
+  });
+  ['pointerdown', 'keydown', 'touchstart'].forEach(function (t) { document.addEventListener(t, armBack, { capture: true, passive: true }); });
+  /* closing the tab or reloading while something is still being saved: the browser asks first */
+  window.addEventListener('beforeunload', function (ev) {
+    if (!S.saving || Back.leaving) return;
+    ev.preventDefault(); ev.returnValue = '';
+  });
+
   document.addEventListener('click', function (ev) {
     var b = ev.target.closest ? ev.target.closest('[data-act]') : null;
     if (!b) { if (ev.target === $('veil') && !S.saving) closeSheet(); return; }
@@ -2052,6 +2096,7 @@ var Recap = (function () {
     else if (act === 'pick-name') { $('gName').value = b.getAttribute('data-name'); $('gMsg').textContent = 'Now choose a password.'; try { $('gPass').focus(); } catch (e) { /* focus is a nicety */ } }
     else if (act === 'gate-mode') gateMode(!S.gateNew);
     else if (act === 'change-password') openSheet({ type: 'password' });
+    else if (act === 'leave-app') leaveApp();
     else if (act === 'save-password') changePassword();
     else if (act === 'edit-quote') { if (S.quote) openSheet({ type: 'editquote' }); }
     else if (act === 'save-quote') saveQuote();
