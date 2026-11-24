@@ -218,6 +218,12 @@ button { cursor: pointer; }
 .scan-actions + .scan-actions { margin-top: 10px; }
 .scan-actions .btn.solid { background: #fff; color: #05080B; font-weight: 600; font-size: 16px; }
 #findOut { margin-top: 10px; max-height: 44vh; overflow-y: auto; }
+.check-title { font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+.alike { margin: 8px 0 4px; }
+.alike .pick { padding: 7px 0; }
+.alike .pick b { font-size: 17px; }
+.alike .pick span { font-size: 13px; }
+.alike .pick b mark { background: #FCE9A8; color: inherit; border-radius: 3px; padding: 0 1px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .chips button { border: 1px solid var(--line); background: var(--page); border-radius: 999px; padding: 8px 14px; font-size: 15px; }
 .check { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 16px; }
@@ -884,6 +890,43 @@ var Recap = (function () {
     return out;
   }
 
+  /* Item numbers that are easy to mix up with this one, most alike first:
+     the same family (11633, 11633.EMC, 11633.VT), one that begins with the other (41221.51, 41221.51CAM),
+     and numbers that differ by one character (684193, 684194), which is what a misread usually looks like. */
+  function oneEdit(a, b) {
+    if (a === b || Math.abs(a.length - b.length) > 1) return false;
+    var i = 0, j = 0, diff = 0;
+    while (i < a.length && j < b.length) {
+      if (a.charAt(i) === b.charAt(j)) { i++; j++; continue; }
+      if (++diff > 1) return false;
+      if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+    }
+    return diff + (a.length - i) + (b.length - j) <= 1;
+  }
+  /* withMisreads: also numbers one character away. Only useful when the number was read as text: a barcode
+     read is exact, so for a barcode only related numbers (the same family) can be the real mix-up. */
+  function similarItems(itemNo, limit, withMisreads) {
+    var u = String(itemNo).toUpperCase(), stem = u.split(/[.\-\/ ]/)[0], close = [], family = [], near = [];
+    if (S.cat.state !== 'ready') return [];
+    for (var i = 0; i < S.cat.upper.length; i++) {
+      var x = S.cat.upper[i];
+      if (x === u) continue;
+      if (Math.min(x.length, u.length) >= 4 && (x.indexOf(u) === 0 || u.indexOf(x) === 0)) close.push(i);
+      else if (stem.length >= 4 && (x === stem || (x.indexOf(stem) === 0 && /[.\-\/ ]/.test(x.charAt(stem.length))))) family.push(i);
+      else if (withMisreads && u.length >= 5 && oneEdit(u, x)) near.push(i);
+    }
+    return close.concat(near, family).slice(0, limit || 6).map(itemAt);
+  }
+  /* the part of a similar number that differs from the one read, marked */
+  function markDiff(read, other) {
+    var a = String(read).toUpperCase(), b = String(other), p = 0;
+    while (p < a.length && p < b.length && a.charAt(p) === b.charAt(p).toUpperCase()) p++;
+    var q = 0;
+    while (q < a.length - p && q < b.length - p && a.charAt(a.length - 1 - q) === b.charAt(b.length - 1 - q).toUpperCase()) q++;
+    var mid = b.slice(p, b.length - q);
+    return esc(b.slice(0, p)) + (mid ? '<mark>' + esc(mid) + '</mark>' : '') + esc(b.slice(b.length - q));
+  }
+
   /* ---------- data ---------- */
   function lineById(id) { for (var i = 0; i < S.lines.length; i++) if (S.lines[i].id === id) return S.lines[i]; return null; }
   function lineForItem(no) { for (var i = 0; i < S.lines.length; i++) if (S.lines[i].type === 'item' && S.lines[i].item.toUpperCase() === String(no).toUpperCase()) return S.lines[i]; return null; }
@@ -1151,7 +1194,7 @@ var Recap = (function () {
   }
 
   /* ---------- sheets ---------- */
-  var VIA = { camera: 'Barcode read with the camera', photo: 'Barcode read from a photo', typed: 'Barcode typed in', text: 'Item number read by the camera', both: 'Barcode and item number agreed', find: 'Found by typing' };
+  var VIA = { camera: 'Barcode read with the camera', photo: 'Barcode read from a photo', typed: 'Barcode typed in', text: 'Item number read by the camera', both: 'Barcode and item number agreed', find: 'Found by typing', picked: 'Chosen from similar item numbers' };
 
   function pickHtml(items) {
     return items.map(function (it) {
@@ -1180,7 +1223,11 @@ var Recap = (function () {
       var meta = (it.ean ? 'EAN ' + esc(it.ean) : 'No barcode in the item list') + '.';
       if (VIA[sh.via]) meta += ' ' + VIA[sh.via] + '.';
       if (l) meta += ' Already in this quotation' + (l.updatedBy ? ', last saved by ' + esc(l.updatedBy) : '') + '.';
-      html = '<div class="sheet-no">' + esc(it.item) + '</div><div class="sheet-name">' + esc(it.name) + '</div><div class="sheet-meta">' + meta + '</div>' +
+      var alike = (sh.similar || []).filter(function (x) { return x.item.toUpperCase() !== it.item.toUpperCase(); });
+      html = (sh.scanned ? '<div class="sheet-meta check-title">Check the item number before adding</div>' : '') +
+        '<div class="sheet-no">' + esc(it.item) + '</div><div class="sheet-name">' + esc(it.name) + '</div><div class="sheet-meta">' + meta + '</div>' +
+        (alike.length ? '<div class="alike"><div class="sheet-meta warn">Similar item numbers exist. If the item in hand is one of these, tap it:</div>' +
+          alike.map(function (x) { return '<button class="pick" data-act="swap-item" data-item="' + esc(x.item) + '"><b>' + markDiff(it.item, x.item) + '</b><span>' + esc(x.name) + '</span></button>'; }).join('') + '</div>' : '') +
         '<label class="field"><span>Quantity</span><input id="fQty" inputmode="numeric" autocomplete="off" maxlength="40" value="' + esc(sh.qty !== undefined ? sh.qty : (l ? l.qty : '')) + '"></label>' +
         '<label class="field"><span>Note</span><textarea id="fNote" rows="2" maxlength="1000">' + esc(sh.note !== undefined ? sh.note : (l ? l.note : '')) + '</textarea></label>' +
         (sh.conflict ? conflictHtml(sh.conflict) : '') +
@@ -1294,7 +1341,7 @@ var Recap = (function () {
     el.innerHTML = html;
     $('veil').hidden = false;
     el.scrollTop = 0;
-    var focus = sh.type === 'find' ? $('findIn') : sh.type === 'newquote' ? $('fCustomer') : (sh.type === 'line' && !sh.id) ? $('fQty') : null;
+    var focus = sh.type === 'find' ? $('findIn') : sh.type === 'newquote' ? $('fCustomer') : (sh.type === 'line' && !sh.id && !sh.scanned) ? $('fQty') : null;      /* after a scan: no keyboard over the number to check */
     if (focus) { try { focus.focus({ preventScroll: true }); } catch (e) { focus.focus(); } }
     if (sh.type === 'find') renderFind();
     if (sh.type === 'newitem') loadPhotos(sh.photos || []);
@@ -1653,7 +1700,7 @@ var Recap = (function () {
   function idleMsg() {
     if (S.cat.state !== 'ready') return catalogLine() || 'The item list is not on this phone yet.';
     if (!S.scan.live) return 'The live camera isn’t available here (' + (S.scan.why || 'not started') + '). Take a photo of the barcode, or use Read item number.';
-    return 'Point at the barcode or the printed item number. Items are added by themselves.' + (S.scan.textReady ? '' : ' The text reader is still loading; barcodes already work.');
+    return 'Point at the barcode or the printed item number. Each item is shown for you to check before it is added.' + (S.scan.textReady ? '' : ' The text reader is still loading; barcodes already work.');
   }
   function openScan() {
     S.scan.open = true; S.scan.last = null; S.scan.cool = null;
@@ -1736,7 +1783,7 @@ var Recap = (function () {
     if (navigator.vibrate) { try { navigator.vibrate(60); } catch (e) { /* not supported */ } }
     if (S.cat.state !== 'ready') { openSheet({ type: 'info', title: code, text: catalogLine() || 'The item list is not on this phone yet, so this barcode cannot be looked up.', code: code }); return; }
     var hits = itemsForEan(code);
-    if (hits.length === 1 && sure !== false) autoAdd(hits[0], via, code);
+    if (hits.length === 1 && sure !== false) confirmScan(hits[0], via, code);
     else if (hits.length === 1) chooseItem(hits[0], via, code);
     else if (hits.length > 1) openSheet({ type: 'pick', title: code, text: hits.length + ' items share this barcode. Tap the one in hand.', items: hits, via: via, code: code, auto: true });
     else openSheet({ type: 'notfound', title: code, code: code, ean: code, via: via,
@@ -1766,6 +1813,25 @@ var Recap = (function () {
     return out;
   }
 
+  /* A scan never adds by itself: it opens the item for checking, with similar item numbers to choose from. */
+  function confirmScan(it, via, code) {
+    quiet(it.item, code);
+    S.scan.paused = true; $('scan').classList.add('is-hit'); hideNote();
+    if (navigator.vibrate) { try { navigator.vibrate(60); } catch (e) { /* not supported */ } }
+    var has = lineForItem(it.item);
+    var misreads = via === 'text';
+    openSheet({ type: 'line', id: has ? has.id : null, item: has ? null : it, via: via, code: code || '', scanned: true, misreads: misreads, similar: similarItems(it.item, 6, misreads) });
+  }
+  function swapItem(no) {
+    var sh = S.sheet, it = itemByNumber(no); if (!sh || sh.type !== 'line' || !it || S.saving) return;
+    sh.qty = $('fQty').value; sh.note = $('fNote').value;             /* what was typed stays */
+    var has = lineForItem(it.item);
+    sh.id = has ? has.id : null; sh.item = has ? null : it; sh.seen = undefined; sh.newId = null; sh.via = 'picked';
+    if (sh.code) quiet(null, sh.code);
+    quiet(it.item);
+    sh.similar = similarItems(it.item, 6, sh.misreads);
+    openSheet(sh);
+  }
   function autoAdd(it, via, code) {
     quiet(it.item, code);
     var has = lineForItem(it.item);
@@ -1833,7 +1899,7 @@ var Recap = (function () {
     /* a number that was read only once and does not match may be a misread: look once more before asking */
     if (!agree.length && seen.length && !steady.length && sg.tries < 2) { sg.tries++; S.scan.decideTimer = setTimeout(decideBarcode, 1800); return; }
     S.scan.sight = null; S.scan.deciding = false;
-    if (agree.length === 1) { autoAdd(agree[0], 'both', sg.code); return; }
+    if (agree.length === 1) { confirmScan(agree[0], 'both', sg.code); return; }
     if (steady.length && sg.items.length) {
       ask({ type: 'pick', title: 'Barcode and item number differ', auto: true, via: 'camera', code: sg.code,
             text: 'The barcode ' + sg.code + ' belongs to ' + sg.items.map(function (i) { return i.item; }).join(', ') + ', but the printed number reads ' + steady.map(function (i) { return i.item; }).join(', ') + '. Tap the item in hand.',
@@ -1845,7 +1911,7 @@ var Recap = (function () {
             text: 'The barcode ' + sg.code + ' is not in the item list. The printed number reads as below. Tap it if that is the item.', items: steady, more: extensionsOf(steady[0].item, 8) });
       return;
     }
-    if (sg.items.length === 1) { autoAdd(sg.items[0], 'camera', sg.code); return; }
+    if (sg.items.length === 1) { confirmScan(sg.items[0], 'camera', sg.code); return; }
     S.scan.paused = true;
     onCode(sg.code, 'camera', true);                     /* several items share it, or it is unknown: ask */
   }
@@ -1899,7 +1965,7 @@ var Recap = (function () {
     var steady = fresh.filter(function (it) { return (S.scan.streak[it.item] || 0) >= 2; });
     if (!steady.length) return;
     var longer = extensionsOf(steady[0].item, 8);
-    if (steady.length === 1 && items.length === 1 && !longer.length) { autoAdd(steady[0], 'text'); return; }
+    if (steady.length === 1 && items.length === 1 && !longer.length) { confirmScan(steady[0], 'text'); return; }
     steady.forEach(function (it) { quiet(it.item); });
     ask({ type: 'pick', title: 'Which item?', auto: true, via: 'text',
           text: steady.length > 1 ? 'Several item numbers are in the picture. Tap the item in hand.' : 'Longer item numbers start the same way, so the camera may have read only part of it. Tap the item in hand.',
@@ -2073,10 +2139,11 @@ var Recap = (function () {
     else if (act === 'open-line') { var l = lineById(b.getAttribute('data-id')); if (l) openSheet(l.type === 'new' ? { type: 'newitem', id: l.id } : { type: 'line', id: l.id, via: '' }); }
     else if (act === 'pick-item') {
       var it = itemByNumber(b.getAttribute('data-item'));
-      if (it && sh && sh.auto) { var via = sh.via, code = sh.code; S.sheet = null; $('veil').hidden = true; autoAdd(it, via, code); }      /* asked because unsure: the tap is the answer */
+      if (it && sh && sh.auto) { confirmScan(it, sh.via, sh.code); }      /* chosen from a list: still shown for checking, with quantity and note */
       else if (it) chooseItem(it, sh && sh.type === 'find' ? 'find' : (sh && sh.via) || 'find', sh && sh.code);
     }
     else if (act === 'note-undo') undoAdd(b.getAttribute('data-id'));
+    else if (act === 'swap-item') swapItem(b.getAttribute('data-item'));
     else if (act === 'note-edit') { var ln = lineById(b.getAttribute('data-id')); hideNote(); if (ln) { S.scan.paused = true; openSheet({ type: 'line', id: ln.id, via: '' }); } }
     else if (act === 'note-retry') { var again = S.scan.retry; S.scan.retry = null; if (again) autoAdd(again.it, again.via, again.code); }
     else if (act === 'find') openSheet({ type: 'find', code: sh && sh.code });
