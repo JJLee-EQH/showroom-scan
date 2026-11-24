@@ -6,7 +6,7 @@
      Paste the web app URL from Apps Script between the quotes (it ends in /exec).
      ==================================================================================== -->
 <script>
-var API_URL = 'https://script.google.com/macros/s/AKfycbyx9jF4vB6t7J9Yj1uj0WdouRTxrtckOZpQz2u54t6WQryF2Nq0byDcCMWx7_x3j63qcg/exec';
+var API_URL = 'https://script.google.com/macros/s/AKfycbxDqhFGcBdf8ilUVV7j5UDRgRxZzE2YkRXOtZwclOv6fHL3K6NszoahY9-K8GHyQQ6wRA/exec';
 var REFRESH_MS = 20000;   /* how often an open phone re-reads the lines, in milliseconds */
 </script>
 <meta charset="utf-8">
@@ -182,6 +182,16 @@ button { cursor: pointer; }
 .sheet-actions .btn { flex: 1 1 140px; }
 .pick { display: block; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line); padding: 14px 0; }
 .pick b { display: block; font-size: 18px; font-weight: 600; }
+/* item pictures: a small picture beside a number, a larger one on the item itself */
+.pick.has-pic { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; align-items: center; }
+.pick.has-pic .pick-text { min-width: 0; }
+.pic { width: 52px; height: 52px; border-radius: 8px; background: var(--page) center / contain no-repeat; flex: none; }
+.pic.is-empty { display: none; }
+.alike .pic { width: 44px; height: 44px; }
+.item-head { display: grid; grid-template-columns: 1fr auto; column-gap: 14px; align-items: start; }
+.item-head .pic { width: 120px; height: 120px; border-radius: 12px; background-color: #fff; border: 1px solid var(--line); }
+.pic-upload .progress { font-variant-numeric: tabular-nums; }
+.pic-upload ul { margin: 6px 0 0; padding-left: 18px; max-height: 22vh; overflow-y: auto; font-size: 14px; color: var(--muted); }
 .pick span { color: var(--muted); font-size: 14px; }
 
 .foot { padding: 22px 16px 0; font-size: 14px; color: var(--muted); }
@@ -718,7 +728,7 @@ var Recap = (function () {
     code: '', name: '',
     status: 'gate',               // unconfigured | gate | loading | ready | error
     problem: '',
-    quotes: [], qid: null, quote: null, lines: [], trash: 0, people: [], team: [], admin: false, token: '', gateNew: false, cache: {}, stamp: '', g: '', recent: [], checking: false,
+    quotes: [], qid: null, quote: null, lines: [], trash: 0, people: [], team: [], admin: false, pics: {}, upload: null, token: '', gateNew: false, cache: {}, stamp: '', g: '', recent: [], checking: false,
     sheet: null, saving: false,
     seq: 0, syncedAt: 0, offline: false,
     cat: { at: '', items: [], byEan: {}, byItem: {}, upper: [], state: 'none' },   // none | loading | ready | empty | failed
@@ -782,6 +792,7 @@ var Recap = (function () {
     if (c === 'no_such_person') return 'That name isn’t in the team list. Ask an admin to add you to the tab “People”.';
     if (c === 'weak_password') return 'Use at least 8 characters for the password.';
     if (c === 'locked') return 'Too many wrong passwords. Try again in ' + (e.minutes || 15) + ' minutes, or ask an admin to reset the password.';
+    if (c === 'not_admin') return 'Only admins can upload item pictures.';
     if (c === 'not_yours') return 'Only the owner of this quotation or an admin can do that.';
     if (c === 'not_set_up') return 'The storage has no access code yet. In the Sheet, use Scan tool > 2. Set the team access code.';
     if (c === 'busy') return 'Someone else is saving at this moment. Save again.';
@@ -1117,6 +1128,81 @@ var Recap = (function () {
     if (t) api('logout').catch(function () { /* signing out locally is what counts */ });
     showGate('');
   }
+  /* ----- uploading item pictures (admins, on a computer) ----- */
+  function hex(buf) { return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); }
+  function shrinkPicture(file) {
+    var open = window.createImageBitmap
+      ? createImageBitmap(file, { imageOrientation: 'from-image' }).catch(function () { return createImageBitmap(file); })
+      : Promise.reject(new Error('no bitmap'));
+    return open.catch(function () {
+      return new Promise(function (resolve, reject) {
+        var url = URL.createObjectURL(file), im = new Image();
+        im.onload = function () { URL.revokeObjectURL(url); resolve(im); };
+        im.onerror = function () { URL.revokeObjectURL(url); reject(new Error('not a picture')); };
+        im.src = url;
+      });
+    }).then(function (img) {
+      var w = img.width || img.naturalWidth, h = img.height || img.naturalHeight, sc = Math.min(1, 300 / Math.max(w, h));
+      var c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w * sc)); c.height = Math.max(1, Math.round(h * sc));
+      var g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);   /* white behind see-through parts */
+      if (img.close) img.close();
+      var url = c.toDataURL('image/jpeg', 0.72);
+      if (url.length > 88000) url = c.toDataURL('image/jpeg', 0.55);
+      return url.slice(url.indexOf(',') + 1);
+    });
+  }
+  function startPictureUpload(fileList) {
+    var files = Array.prototype.filter.call(fileList || [], function (f) { return /\.(jpe?g|png|webp)$/i.test(f.name); });
+    if (!files.length) { formMsg('No photos found. Choose .jpg, .png or .webp files.'); return; }
+    if (S.cat.state !== 'ready') { formMsg('The item list is not on this device yet. Wait a moment and try again.'); return; }
+    var u = S.upload = { running: true, stop: false, total: files.length, done: 0, saved: 0, same: 0, unmatched: [], failed: [], status: 'Checking what is already uploaded…' };
+    S.saving = true; openSheet(S.sheet);
+    function show() { u.status = 'Checked ' + u.done + ' of ' + u.total + ' · uploaded ' + u.saved + ' · unchanged ' + u.same + ' · not matched ' + u.unmatched.length + (u.failed.length ? ' · problems ' + u.failed.length : ''); var el = document.querySelector('.pic-upload .progress'); if (el) el.textContent = u.status; }
+    function finish(note) {
+      u.running = false; S.saving = false;
+      u.status = (u.stop ? 'Stopped. ' : 'Done. ') + u.saved + ' uploaded, ' + u.same + ' already up to date, ' + u.unmatched.length + ' not matched' + (u.failed.length ? ', ' + u.failed.length + ' with problems' : '') + ' (' + u.done + ' of ' + u.total + ' checked).' + (note ? ' ' + note : '');
+      Object.keys(S.pics).forEach(function (k) { if (!S.pics[k]) delete S.pics[k]; });          /* items that had no picture may have one now */
+      if (S.sheet && S.sheet.type === 'pictures') openSheet(S.sheet);
+    }
+    api('pic_have').then(function (j) {
+      var have = {}, seen = {}, i = 0, batch = [], size = 0;
+      Object.keys(j.have || {}).forEach(function (k) { have[k.toUpperCase()] = j.have[k]; });
+      function send() {
+        if (!batch.length) return Promise.resolve();
+        var part = batch; batch = []; size = 0;
+        return api('pic_put', { pictures: part }, 120000).then(function (r) {
+          u.saved += r.saved || 0; u.same += r.same || 0;
+          (r.unknown || []).forEach(function (x) { u.unmatched.push(x); });
+          (r.bad || []).forEach(function (x) { u.failed.push(x + ' (refused by the Sheet)'); });
+          show();
+        });
+      }
+      function next() {
+        if (u.stop) return send().then(function () { finish(); });
+        if (i >= files.length) return send().then(function () { finish(); });
+        var f = files[i++], stem = f.name.replace(/\.[^.]+$/, '').trim(), it = itemByNumber(stem);
+        if (!it) { u.done++; u.unmatched.push(f.name); show(); return next(); }
+        var key = it.item.toUpperCase();
+        if (seen[key]) { u.done++; u.failed.push(f.name + ' (a second photo for ' + it.item + '; the first one was used)'); show(); return next(); }
+        seen[key] = true;
+        return f.arrayBuffer().then(function (buf) { return crypto.subtle.digest('SHA-1', buf); }).then(function (d) {
+          var h = hex(d).slice(0, 40);
+          u.done++;
+          if (have[key] === h) { u.same++; show(); return; }
+          return shrinkPicture(f).then(function (b64) {
+            batch.push({ item: it.item, hash: h, data: b64 }); size += b64.length;
+            if (batch.length >= 40 || size > 1500000) return send();
+          }, function () { u.failed.push(f.name + ' (could not be read as a picture)'); show(); });
+        }).then(next);
+      }
+      show();
+      return next();
+    }).catch(function (e) {
+      if (e && e.error === 'signed_out') { S.saving = false; showGate(problemText(e)); return; }
+      finish('The upload stopped: ' + (e && e.error === 'network' ? 'no connection to the storage.' : problemText(e)) + ' Choose the photos again to continue; what was uploaded is kept.');
+    });
+  }
+
   function changePassword() {
     var sh = S.sheet; if (!sh || sh.type !== 'password' || S.saving) return;
     var old = $('pOld').value, next = $('pNew').value;
@@ -1182,24 +1268,54 @@ var Recap = (function () {
         ready: '<b>' + (S.quotes.length ? 'No quotation is open' : 'No quotation yet') + '</b>Start one when a customer arrives.<br><br><button class="btn primary" data-act="new-quote">New quotation</button>'
       }[S.status];
       list.innerHTML = (msg ? '<div class="state">' + msg + '</div>' : '') + (S.status === 'ready'
-        ? '<div class="foot">Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button></div>' : '');
+        ? '<div class="foot">Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button>' : '') + '</div>' : '');
       return;
     }
     var html = S.lines.map(rowHtml).join('');
     if (!S.lines.length) html = '<div class="state"><b>No lines yet</b>Scan a barcode, read a printed item number, find an item by typing, or add a new item with photos.</div>';
     html += '<div class="foot"><button class="text-btn" data-act="new-quote">New quotation</button></div>' +
       '<div class="foot">' + (S.cat.state === 'ready' ? 'Item list: ' + S.cat.items.length.toLocaleString() + ' items' + (S.cat.at ? ', refreshed ' + new Date(S.cat.at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '') + '. ' : '') +
-      'Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button></div>';
+      'Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button>' : '') + '</div>';
     list.innerHTML = html;
   }
 
   /* ---------- sheets ---------- */
   var VIA = { camera: 'Barcode read with the camera', photo: 'Barcode read from a photo', typed: 'Barcode typed in', text: 'Item number read by the camera', both: 'Barcode and item number agreed', find: 'Found by typing', picked: 'Chosen from similar item numbers' };
 
+  /* ----- item pictures -----
+     Small pictures come from the Sheet, at most 12 per request, and are kept in memory while the page is open.
+     A place for a picture is <span class="pic" data-pic="ITEM">; it is filled when the picture arrives and hidden
+     when the item has none. */
+  var picsWaiting = {};
+  function picSpan(item) { return '<span class="pic is-empty" data-pic="' + esc(item) + '"></span>'; }
+  function paintPics() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-pic]'), function (el) {
+      var v = S.pics[String(el.getAttribute('data-pic')).toUpperCase()];
+      if (v) { el.style.backgroundImage = 'url("' + v + '")'; el.classList.remove('is-empty'); }
+      else el.classList.add('is-empty');
+      var row = el.closest('.pick'); if (row) row.classList.toggle('has-pic', !!v);
+    });
+  }
+  function wantPics(items) {
+    var need = [];
+    items.forEach(function (i) { var k = String(i).toUpperCase(); if (S.pics[k] === undefined && !picsWaiting[k] && need.indexOf(i) < 0) need.push(i); });
+    paintPics();
+    for (var n = 0; n < need.length; n += 12) (function (part) {
+      part.forEach(function (i) { picsWaiting[String(i).toUpperCase()] = true; });
+      api('pics', { items: part }).then(function (j) {
+        part.forEach(function (i) { var k = String(i).toUpperCase(), d = (j.pictures || {})[i]; S.pics[k] = d ? 'data:image/jpeg;base64,' + d : ''; delete picsWaiting[k]; });
+        paintPics();
+      }).catch(function () { part.forEach(function (i) { delete picsWaiting[String(i).toUpperCase()]; }); });     /* no picture is not worth an error */
+    })(need.slice(n, n + 12));
+  }
+  function picsOnScreen() {
+    var items = Array.prototype.map.call(document.querySelectorAll('[data-pic]'), function (el) { return el.getAttribute('data-pic'); });
+    if (items.length) wantPics(items.slice(0, 24));
+  }
   function pickHtml(items) {
     return items.map(function (it) {
       var has = lineForItem(it.item);
-      return '<button class="pick" data-act="pick-item" data-item="' + esc(it.item) + '"><b>' + esc(it.item) + (has ? ' <span class="tag">in this quotation</span>' : '') + '</b><span>' + esc(it.name) + '</span></button>';
+      return '<button class="pick" data-act="pick-item" data-item="' + esc(it.item) + '"><span class="pick-text"><b>' + esc(it.item) + (has ? ' <span class="tag">in this quotation</span>' : '') + '</b><span>' + esc(it.name) + '</span></span>' + picSpan(it.item) + '</button>';
     }).join('');
   }
   function photoStripHtml(sh) {
@@ -1225,9 +1341,9 @@ var Recap = (function () {
       if (l) meta += ' Already in this quotation' + (l.updatedBy ? ', last saved by ' + esc(l.updatedBy) : '') + '.';
       var alike = (sh.similar || []).filter(function (x) { return x.item.toUpperCase() !== it.item.toUpperCase(); });
       html = (sh.scanned ? '<div class="sheet-meta check-title">Check the item number before adding</div>' : '') +
-        '<div class="sheet-no">' + esc(it.item) + '</div><div class="sheet-name">' + esc(it.name) + '</div><div class="sheet-meta">' + meta + '</div>' +
+        '<div class="item-head"><div><div class="sheet-no">' + esc(it.item) + '</div><div class="sheet-name">' + esc(it.name) + '</div><div class="sheet-meta">' + meta + '</div></div>' + picSpan(it.item) + '</div>' +
         (alike.length ? '<div class="alike"><div class="sheet-meta warn">Similar item numbers exist. If the item in hand is one of these, tap it:</div>' +
-          alike.map(function (x) { return '<button class="pick" data-act="swap-item" data-item="' + esc(x.item) + '"><b>' + markDiff(it.item, x.item) + '</b><span>' + esc(x.name) + '</span></button>'; }).join('') + '</div>' : '') +
+          alike.map(function (x) { return '<button class="pick" data-act="swap-item" data-item="' + esc(x.item) + '"><span class="pick-text"><b>' + markDiff(it.item, x.item) + '</b><span>' + esc(x.name) + '</span></span>' + picSpan(x.item) + '</button>'; }).join('') + '</div>' : '') +
         '<label class="field"><span>Quantity</span><input id="fQty" inputmode="numeric" autocomplete="off" maxlength="40" value="' + esc(sh.qty !== undefined ? sh.qty : (l ? l.qty : '')) + '"></label>' +
         '<label class="field"><span>Note</span><textarea id="fNote" rows="2" maxlength="1000">' + esc(sh.note !== undefined ? sh.note : (l ? l.note : '')) + '</textarea></label>' +
         (sh.conflict ? conflictHtml(sh.conflict) : '') +
@@ -1308,6 +1424,21 @@ var Recap = (function () {
           '<button class="btn primary" data-act="save-quote">Save changes</button><button class="btn" data-act="sheet-close">Cancel</button>' +
           '<button class="btn danger" data-act="ask-delete">Delete quotation</button></div>';
       }
+    } else if (sh.type === 'pictures') {
+      var u = S.upload;
+      html = '<div class="pic-upload"><div class="sheet-no">Item pictures</div>' +
+        '<div class="sheet-meta">Choose photos named by item number, for example 40844.jpg, or a whole folder of them. Each is made small on this computer ' +
+        '(about 300 pixels) and then uploaded, so the originals never leave it. Photos that are already uploaded in the same version are skipped, so you can run this again at any time.</div>' +
+        (u ? '<p class="progress sheet-meta">' + esc(u.status) + '</p>' +
+             (u.unmatched.length ? '<div class="sheet-meta warn">Not matched to an item number (' + u.unmatched.length + '):</div><ul>' + u.unmatched.slice(0, 40).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + (u.unmatched.length > 40 ? '<li>…</li>' : '') + '</ul>' : '') +
+             (u.failed.length ? '<div class="sheet-meta warn">Could not be read or saved (' + u.failed.length + '):</div><ul>' + u.failed.slice(0, 40).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>' : '')
+           : '') +
+        '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
+        (u && u.running
+          ? '<button class="btn danger" data-act="pic-stop">Stop</button>'
+          : '<label class="btn primary">Choose photos<input id="picFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label>' +
+            '<label class="btn">Choose a folder<input id="picFolder" type="file" webkitdirectory multiple hidden></label>' +
+            '<button class="btn" data-act="sheet-close">Close</button>') + '</div></div>';
     } else if (sh.type === 'password') {
       html = '<div class="sheet-no">Change password</div><div class="sheet-meta">Afterwards your other devices have to sign in again with the new password.</div>' +
         '<label class="field"><span>Current password</span><input id="pOld" type="password" autocomplete="current-password"></label>' +
@@ -1345,6 +1476,7 @@ var Recap = (function () {
     if (focus) { try { focus.focus({ preventScroll: true }); } catch (e) { focus.focus(); } }
     if (sh.type === 'find') renderFind();
     if (sh.type === 'newitem') loadPhotos(sh.photos || []);
+    picsOnScreen();
   }
   function closeSheet() {
     var sh = S.sheet;
@@ -1380,6 +1512,7 @@ var Recap = (function () {
     if (q.length < 2) { box.innerHTML = '<div class="sheet-meta">Type at least two characters.</div>'; return; }
     var res = searchItems(q, 30);
     box.innerHTML = res.length ? pickHtml(res) : '<div class="sheet-meta warn">Nothing in the item list matches “' + esc(q) + '”.</div>';
+    picsOnScreen();
   }
 
   /* choose an item (from a scan, the read text, or typing): open its line, new or existing */
@@ -2127,6 +2260,9 @@ var Recap = (function () {
     ev.preventDefault(); ev.returnValue = '';
   });
 
+  document.addEventListener('change', function (ev) {
+    if (ev.target && (ev.target.id === 'picFiles' || ev.target.id === 'picFolder')) startPictureUpload(ev.target.files);
+  });
   document.addEventListener('click', function (ev) {
     var b = ev.target.closest ? ev.target.closest('[data-act]') : null;
     if (!b) { if (ev.target === $('veil') && !S.saving) closeSheet(); return; }
@@ -2164,6 +2300,8 @@ var Recap = (function () {
     else if (act === 'gate-mode') gateMode(!S.gateNew);
     else if (act === 'change-password') openSheet({ type: 'password' });
     else if (act === 'leave-app') leaveApp();
+    else if (act === 'pictures') { S.upload = null; openSheet({ type: 'pictures' }); }
+    else if (act === 'pic-stop') { if (S.upload) { S.upload.stop = true; S.upload.status = 'Stopping after the current photos…'; var pe = document.querySelector('.pic-upload .progress'); if (pe) pe.textContent = S.upload.status; } }
     else if (act === 'save-password') changePassword();
     else if (act === 'edit-quote') { if (S.quote) openSheet({ type: 'editquote' }); }
     else if (act === 'save-quote') saveQuote();
