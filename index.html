@@ -6,7 +6,7 @@
      Paste the web app URL from Apps Script between the quotes (it ends in /exec).
      ==================================================================================== -->
 <script>
-var API_URL = 'https://script.google.com/macros/s/AKfycbxDqhFGcBdf8ilUVV7j5UDRgRxZzE2YkRXOtZwclOv6fHL3K6NszoahY9-K8GHyQQ6wRA/exec';
+var API_URL = 'https://script.google.com/macros/s/AKfycbyqT9QkViKXbRTAsGWzVIvNJu_0detRnGhO2kXgXmmjaPz0kW64l2SGTF0Pr_PhN4H67Q/exec';
 var REFRESH_MS = 20000;   /* how often an open phone re-reads the lines, in milliseconds */
 </script>
 <meta charset="utf-8">
@@ -728,7 +728,7 @@ var Recap = (function () {
     code: '', name: '',
     status: 'gate',               // unconfigured | gate | loading | ready | error
     problem: '',
-    quotes: [], qid: null, quote: null, lines: [], trash: 0, people: [], team: [], admin: false, pics: {}, upload: null, token: '', gateNew: false, cache: {}, stamp: '', g: '', recent: [], checking: false,
+    quotes: [], qid: null, quote: null, lines: [], trash: 0, people: [], team: [], admin: false, pics: {}, upload: null, picAsk: false, token: '', gateNew: false, cache: {}, stamp: '', g: '', recent: [], checking: false,
     sheet: null, saving: false,
     seq: 0, syncedAt: 0, offline: false,
     cat: { at: '', items: [], byEan: {}, byItem: {}, upper: [], state: 'none' },   // none | loading | ready | empty | failed
@@ -850,6 +850,8 @@ var Recap = (function () {
       if (items[i][1]) { var k = Decoder.gtinKey(items[i][1]); if (k) (byEan[k] = byEan[k] || []).push(i); }
     }
     S.cat = { at: at, items: items, byEan: byEan, byItem: byItem, upper: upper, state: items.length ? 'ready' : 'empty' };
+    if (items.length) setTimeout(picAuto, 2500);                 /* an admin's computer that watches a photo folder checks it now */
+    if (items.length) setTimeout(picAuto, 9000);                 /* again a little later, in case signing in was still under way */
     if (items.length) textReader().catch(function () { /* scanning barcodes works without it */ });      /* get the text reader ready before the first scan */
   }
   function itemAt(i) { var r = S.cat.items[i]; return { item: r[0], ean: r[1] || '', name: r[2] || '' }; }
@@ -1151,26 +1153,55 @@ var Recap = (function () {
       return url.slice(url.indexOf(',') + 1);
     });
   }
-  function startPictureUpload(fileList) {
-    var files = Array.prototype.filter.call(fileList || [], function (f) { return /\.(jpe?g|png|webp)$/i.test(f.name); });
-    if (!files.length) { formMsg('No photos found. Choose .jpg, .png or .webp files.'); return; }
-    if (S.cat.state !== 'ready') { formMsg('The item list is not on this device yet. Wait a moment and try again.'); return; }
-    var u = S.upload = { running: true, stop: false, total: files.length, done: 0, saved: 0, same: 0, unmatched: [], failed: [], status: 'Checking what is already uploaded…' };
-    S.saving = true; openSheet(S.sheet);
-    function show() { u.status = 'Checked ' + u.done + ' of ' + u.total + ' · uploaded ' + u.saved + ' · unchanged ' + u.same + ' · not matched ' + u.unmatched.length + (u.failed.length ? ' · problems ' + u.failed.length : ''); var el = document.querySelector('.pic-upload .progress'); if (el) el.textContent = u.status; }
+  /* One run over a set of photos. For every item number it takes the newest photo, and then:
+       same size and date as last time  -> nothing to do, the file is not even opened
+       size or date differ              -> the file is read; if its content is the same as last time, only the
+                                           size and date are noted again; otherwise it is made small and uploaded.
+     quiet: a background check (no sheet, the app stays usable). */
+  var IMG_NAME = /\.(jpe?g|png|webp)$/i;
+  function picProgress() {
+    var u = S.upload; if (!u) return;
+    var el = document.querySelector('.pic-upload .progress'); if (el) el.textContent = u.status;
+    var note = $('picNote'); if (note) note.textContent = picNoteText();
+  }
+  function picNoteText() {
+    var u = S.upload;
+    if (u && u.running) return ' (checking photos: ' + u.done + ' of ' + u.total + ')';
+    if (S.picAsk) return ' (click to allow the folder check)';
+    return '';
+  }
+  function runPictures(entries, quiet) {
+    if (S.upload && S.upload.running) return Promise.resolve();
+    var u = S.upload = { running: true, stop: false, quiet: !!quiet, total: 0, done: 0, saved: 0, same: 0, doubles: 0, unmatched: [], failed: [], status: 'Checking what is already uploaded…' };
+    if (!quiet) S.saving = true;
+    if (S.sheet && S.sheet.type === 'pictures') openSheet(S.sheet);
+    var best = {}, order = [];
+    entries.forEach(function (e) {
+      var it = itemByNumber(e.name.replace(/\.[^.]+$/, '').trim());
+      if (!it) { u.unmatched.push(e.path); return; }
+      var k = it.item.toUpperCase();
+      if (!best[k]) { best[k] = { it: it, e: e }; order.push(k); }
+      else { u.doubles++; if (e.changed > best[k].e.changed) best[k].e = e; }            /* several photos for one item: the newest wins */
+    });
+    order.sort(); u.total = order.length;
+    function show() { u.status = 'Checked ' + u.done + ' of ' + u.total + ' · uploaded ' + u.saved + ' · unchanged ' + u.same + (u.failed.length ? ' · problems ' + u.failed.length : ''); picProgress(); }
     function finish(note) {
-      u.running = false; S.saving = false;
-      u.status = (u.stop ? 'Stopped. ' : 'Done. ') + u.saved + ' uploaded, ' + u.same + ' already up to date, ' + u.unmatched.length + ' not matched' + (u.failed.length ? ', ' + u.failed.length + ' with problems' : '') + ' (' + u.done + ' of ' + u.total + ' checked).' + (note ? ' ' + note : '');
+      u.running = false; if (!quiet) S.saving = false;
+      var text = u.saved + ' uploaded, ' + u.same + ' unchanged' + (u.unmatched.length ? ', ' + u.unmatched.length + ' not matched to an item number' : '') +
+        (u.doubles ? ', ' + u.doubles + ' older duplicate(s) skipped' : '') + (u.failed.length ? ', ' + u.failed.length + ' with problems' : '') + ' (' + u.done + ' of ' + u.total + ' items checked).';
+      u.status = (u.stop ? 'Stopped. ' : note ? 'Interrupted. ' : 'Done. ') + text + (note ? ' ' + note : '');
+      if (!note) remember('scan.picCheck', JSON.stringify({ at: Date.now(), text: text }));
       Object.keys(S.pics).forEach(function (k) { if (!S.pics[k]) delete S.pics[k]; });          /* items that had no picture may have one now */
       if (S.sheet && S.sheet.type === 'pictures') openSheet(S.sheet);
+      picProgress();
     }
-    api('pic_have').then(function (j) {
-      var have = {}, seen = {}, i = 0, batch = [], size = 0;
+    return api('pic_have').then(function (j) {
+      var have = {}, i = 0, batch = [], size = 0, lastShow = 0;
       Object.keys(j.have || {}).forEach(function (k) { have[k.toUpperCase()] = j.have[k]; });
       function send() {
         if (!batch.length) return Promise.resolve();
         var part = batch; batch = []; size = 0;
-        return api('pic_put', { pictures: part }, 120000).then(function (r) {
+        return api('pic_put', { pictures: part }, 180000).then(function (r) {
           u.saved += r.saved || 0; u.same += r.same || 0;
           (r.unknown || []).forEach(function (x) { u.unmatched.push(x); });
           (r.bad || []).forEach(function (x) { u.failed.push(x + ' (refused by the Sheet)'); });
@@ -1178,30 +1209,102 @@ var Recap = (function () {
         });
       }
       function next() {
-        if (u.stop) return send().then(function () { finish(); });
-        if (i >= files.length) return send().then(function () { finish(); });
-        var f = files[i++], stem = f.name.replace(/\.[^.]+$/, '').trim(), it = itemByNumber(stem);
-        if (!it) { u.done++; u.unmatched.push(f.name); show(); return next(); }
-        var key = it.item.toUpperCase();
-        if (seen[key]) { u.done++; u.failed.push(f.name + ' (a second photo for ' + it.item + '; the first one was used)'); show(); return next(); }
-        seen[key] = true;
-        return f.arrayBuffer().then(function (buf) { return crypto.subtle.digest('SHA-1', buf); }).then(function (d) {
-          var h = hex(d).slice(0, 40);
-          u.done++;
-          if (have[key] === h) { u.same++; show(); return; }
-          return shrinkPicture(f).then(function (b64) {
-            batch.push({ item: it.item, hash: h, data: b64 }); size += b64.length;
-            if (batch.length >= 40 || size > 1500000) return send();
-          }, function () { u.failed.push(f.name + ' (could not be read as a picture)'); show(); });
-        }).then(next);
+        /* unchanged photos are passed over in a plain loop: nothing is read, so thousands take a moment */
+        while (i < order.length && !u.stop) {
+          var k = order[i], e = best[k].e, h = have[k];
+          if (!h || h[1] !== e.size + '-' + e.changed) break;
+          i++; u.done++; u.same++;
+          if (Date.now() - lastShow > 200) { lastShow = Date.now(); show(); }
+        }
+        if (u.stop || i >= order.length) return send().then(function () { show(); finish(); });
+        var key = order[i++], en = best[key].e, it = best[key].it, old = have[key], stamp = en.size + '-' + en.changed;
+        var counted = false;
+        return en.file.arrayBuffer().then(function (buf) { return crypto.subtle.digest('SHA-1', buf); }).then(function (d) {
+          var sha = hex(d).slice(0, 40);
+          u.done++; counted = true;
+          if (old && old[0] === sha) { batch.push({ item: it.item, hash: sha, stamp: stamp }); return; }       /* same photo, only its date moved */
+          return shrinkPicture(en.file).then(function (b64) { batch.push({ item: it.item, hash: sha, stamp: stamp, data: b64 }); size += b64.length; });
+        }).then(function () {
+          if (batch.length >= 60 || size > 1800000) return send();
+          if (Date.now() - lastShow > 200) { lastShow = Date.now(); show(); }
+        }, function () { if (!counted) u.done++; u.failed.push(en.path + ' (could not be read as a picture)'); }).then(next);
       }
       show();
       return next();
     }).catch(function (e) {
-      if (e && e.error === 'signed_out') { S.saving = false; showGate(problemText(e)); return; }
-      finish('The upload stopped: ' + (e && e.error === 'network' ? 'no connection to the storage.' : problemText(e)) + ' Choose the photos again to continue; what was uploaded is kept.');
+      if (e && e.error === 'signed_out') { u.running = false; S.saving = false; showGate(problemText(e)); return; }
+      finish('The upload stopped: ' + (e && e.error === 'network' ? 'no connection to the storage.' : problemText(e)) + ' What was uploaded is kept; the next check continues from there.');
     });
   }
+  function startPictureUpload(fileList) {
+    var files = Array.prototype.filter.call(fileList || [], function (f) { return IMG_NAME.test(f.name); });
+    if (!files.length) { formMsg('No photos found. Choose .jpg, .png or .webp files.'); return; }
+    if (S.cat.state !== 'ready') { formMsg('The item list is not on this device yet. Wait a moment and try again.'); return; }
+    runPictures(files.map(function (f) { return { name: f.name, path: f.webkitRelativePath || f.name, size: f.size, changed: f.lastModified, file: f }; }), false);
+  }
+
+  /* ----- watching a folder (Chrome and Edge on a computer) -----
+     The browser can keep a link to a folder the person chose. With it, the app looks through that folder and its
+     subfolders by itself: when it is opened on this computer, and every four hours while it stays open. */
+  function canWatch() { return typeof window.showDirectoryPicker === 'function' && !!window.indexedDB; }
+  function picStore(mode, value) {
+    if (window.__scanPicStore) return window.__scanPicStore(mode, value);        /* automated tests supply their own memory for the folder */
+    return new Promise(function (resolve, reject) {
+      var open = indexedDB.open('showroom-scan-pictures', 1);
+      open.onupgradeneeded = function () { open.result.createObjectStore('kv'); };
+      open.onerror = function () { reject(open.error); };
+      open.onsuccess = function () {
+        var tx = open.result.transaction('kv', mode === 'get' ? 'readonly' : 'readwrite'), st = tx.objectStore('kv');
+        var rq = mode === 'get' ? st.get('folder') : mode === 'set' ? st.put(value, 'folder') : st.delete('folder');
+        tx.oncomplete = function () { open.result.close(); resolve(mode === 'get' ? rq.result || null : true); };
+        tx.onerror = function () { open.result.close(); reject(tx.error); };
+      };
+    });
+  }
+  async function listFolder(dir, path, out) {
+    for await (const h of dir.values()) {
+      if (S.upload && S.upload.stop) return out;
+      if (h.kind === 'directory') await listFolder(h, path + h.name + '/', out);
+      else if (IMG_NAME.test(h.name)) { const f = await h.getFile(); out.push({ name: f.name, path: path + f.name, size: f.size, changed: f.lastModified, file: f }); }
+    }
+    return out;
+  }
+  /* asked: the person clicked, so the browser may show its "allow" question; otherwise the check only runs if allowed already */
+  function checkFolder(asked) {
+    if (!canWatch() || !S.admin || (S.upload && S.upload.running) || S.cat.state !== 'ready') return Promise.resolve();
+    return picStore('get').then(function (dir) {
+      if (!dir) return;
+      return Promise.resolve(dir.queryPermission ? dir.queryPermission({ mode: 'read' }) : 'granted').then(function (p) {
+        if (p !== 'granted' && !asked) { S.picAsk = true; picProgress(); return 'ask'; }
+        return (p === 'granted' ? Promise.resolve(p) : dir.requestPermission({ mode: 'read' })).then(function (p2) {
+          if (p2 !== 'granted') { if (asked) formMsg('The browser was not allowed to read the folder.'); return; }
+          S.picAsk = false;
+          S.upload = { running: true, stop: false, quiet: !asked, total: 0, done: 0, saved: 0, same: 0, doubles: 0, unmatched: [], failed: [], status: 'Looking through the folder…' };
+          if (S.sheet && S.sheet.type === 'pictures') openSheet(S.sheet);
+          picProgress();
+          return listFolder(dir, '', []).then(function (entries) { S.upload.running = false; return runPictures(entries, !asked); });
+        });
+      });
+    }).catch(function (e) {
+      if (S.upload) S.upload.running = false;
+      if (asked) formMsg('The folder could not be read (' + ((e && e.message) || 'unknown reason') + '). Choose it again with Watch a folder.');
+    });
+  }
+  function watchFolder() {
+    if (!canWatch()) return;
+    window.showDirectoryPicker({ mode: 'read' }).then(function (dir) {
+      return picStore('set', dir).then(function () { remember('scan.picFolder', dir.name); S.upload = null; if (S.sheet && S.sheet.type === 'pictures') openSheet(S.sheet); return checkFolder(true); });
+    }).catch(function (e) { if (e && e.name !== 'AbortError') formMsg('The folder could not be chosen (' + (e.message || e.name) + ').'); });
+  }
+  function unwatchFolder() { picStore('clear').catch(function () {}).then(function () { forget('scan.picFolder'); S.picAsk = false; if (S.sheet && S.sheet.type === 'pictures') openSheet(S.sheet); render(); }); }
+  /* once after the app opens, then whenever the last check is more than four hours old */
+  var picAutoStarted = false;
+  function picAuto() {
+    if (!S.admin || !canWatch() || !recall('scan.picFolder') || S.cat.state !== 'ready' || S.status !== 'ready') return;
+    var last = 0; try { last = (JSON.parse(recall('scan.picCheck') || '{}').at) || 0; } catch (e) { last = 0; }
+    if (!picAutoStarted || Date.now() - last > 4 * 3600000) { picAutoStarted = true; checkFolder(false); }
+  }
+  setInterval(picAuto, 15 * 60000);
 
   function changePassword() {
     var sh = S.sheet; if (!sh || sh.type !== 'password' || S.saving) return;
@@ -1268,14 +1371,14 @@ var Recap = (function () {
         ready: '<b>' + (S.quotes.length ? 'No quotation is open' : 'No quotation yet') + '</b>Start one when a customer arrives.<br><br><button class="btn primary" data-act="new-quote">New quotation</button>'
       }[S.status];
       list.innerHTML = (msg ? '<div class="state">' + msg + '</div>' : '') + (S.status === 'ready'
-        ? '<div class="foot">Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button>' : '') + '</div>' : '');
+        ? '<div class="foot">Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button><span id="picNote">' + esc(picNoteText()) + '</span>' : '') + '</div>' : '');
       return;
     }
     var html = S.lines.map(rowHtml).join('');
     if (!S.lines.length) html = '<div class="state"><b>No lines yet</b>Scan a barcode, read a printed item number, find an item by typing, or add a new item with photos.</div>';
     html += '<div class="foot"><button class="text-btn" data-act="new-quote">New quotation</button></div>' +
       '<div class="foot">' + (S.cat.state === 'ready' ? 'Item list: ' + S.cat.items.length.toLocaleString() + ' items' + (S.cat.at ? ', refreshed ' + new Date(S.cat.at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '') + '. ' : '') +
-      'Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button>' : '') + '</div>';
+      'Signed in as <b>' + esc(S.name) + '</b>' + (S.admin ? ' (admin)' : '') + '. <button class="text-btn" data-act="signout">Sign out</button> <button class="text-btn" data-act="change-password">Change password</button>' + (S.admin ? ' <button class="text-btn" data-act="pictures">Item pictures</button><span id="picNote">' + esc(picNoteText()) + '</span>' : '') + '</div>';
     list.innerHTML = html;
   }
 
@@ -1425,19 +1528,27 @@ var Recap = (function () {
           '<button class="btn danger" data-act="ask-delete">Delete quotation</button></div>';
       }
     } else if (sh.type === 'pictures') {
-      var u = S.upload;
+      var u = S.upload, watched = recall('scan.picFolder'), last = null;
+      try { last = JSON.parse(recall('scan.picCheck') || 'null'); } catch (e) { last = null; }
       html = '<div class="pic-upload"><div class="sheet-no">Item pictures</div>' +
-        '<div class="sheet-meta">Choose photos named by item number, for example 40844.jpg, or a whole folder of them. Each is made small on this computer ' +
-        '(about 300 pixels) and then uploaded, so the originals never leave it. Photos that are already uploaded in the same version are skipped, so you can run this again at any time.</div>' +
+        '<div class="sheet-meta">Photos named by item number, for example 40844.jpg, become the small pictures in the app. Each photo is made small on this computer ' +
+        '(about 300 pixels) and then uploaded, so the originals never leave it. Only new and changed photos are uploaded.</div>' +
+        (canWatch()
+          ? (watched
+              ? '<div class="sheet-meta"><b>Watching the folder “' + esc(watched) + '”</b> with everything inside it. This computer checks it whenever the app is opened here, and every 4 hours while it stays open.</div>'
+              : '<div class="sheet-meta">Choose <b>Watch a folder</b> once, and this computer keeps the pictures up to date by itself whenever the app is open here.</div>')
+          : '<div class="sheet-meta">This browser cannot watch a folder by itself. Use Chrome or Edge on a computer for that; choosing photos by hand works here.</div>') +
         (u ? '<p class="progress sheet-meta">' + esc(u.status) + '</p>' +
              (u.unmatched.length ? '<div class="sheet-meta warn">Not matched to an item number (' + u.unmatched.length + '):</div><ul>' + u.unmatched.slice(0, 40).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + (u.unmatched.length > 40 ? '<li>…</li>' : '') + '</ul>' : '') +
              (u.failed.length ? '<div class="sheet-meta warn">Could not be read or saved (' + u.failed.length + '):</div><ul>' + u.failed.slice(0, 40).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>' : '')
-           : '') +
+           : (last ? '<p class="progress sheet-meta">Last check ' + esc(new Date(last.at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) + ': ' + esc(last.text) + '</p>' : '')) +
         '<p class="form-msg" id="fMsg" role="alert"></p><div class="sheet-actions">' +
         (u && u.running
-          ? '<button class="btn danger" data-act="pic-stop">Stop</button>'
-          : '<label class="btn primary">Choose photos<input id="picFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label>' +
-            '<label class="btn">Choose a folder<input id="picFolder" type="file" webkitdirectory multiple hidden></label>' +
+          ? '<button class="btn danger" data-act="pic-stop">Stop</button>' + (u.quiet ? '<button class="btn" data-act="sheet-close">Close (it keeps running)</button>' : '')
+          : (canWatch() ? (watched ? '<button class="btn primary" data-act="pic-check">Check now</button><button class="btn" data-act="pic-watch">Watch another folder</button><button class="btn" data-act="pic-unwatch">Stop watching</button>'
+                                   : '<button class="btn primary" data-act="pic-watch">Watch a folder</button>') : '') +
+            '<label class="btn">Choose photos<input id="picFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label>' +
+            '<label class="btn">Choose a folder once<input id="picFolder" type="file" webkitdirectory multiple hidden></label>' +
             '<button class="btn" data-act="sheet-close">Close</button>') + '</div></div>';
     } else if (sh.type === 'password') {
       html = '<div class="sheet-no">Change password</div><div class="sheet-meta">Afterwards your other devices have to sign in again with the new password.</div>' +
@@ -2300,7 +2411,10 @@ var Recap = (function () {
     else if (act === 'gate-mode') gateMode(!S.gateNew);
     else if (act === 'change-password') openSheet({ type: 'password' });
     else if (act === 'leave-app') leaveApp();
-    else if (act === 'pictures') { S.upload = null; openSheet({ type: 'pictures' }); }
+    else if (act === 'pictures') { if (!(S.upload && S.upload.running)) S.upload = null; openSheet({ type: 'pictures' }); if (S.picAsk) checkFolder(true); }
+    else if (act === 'pic-watch') watchFolder();
+    else if (act === 'pic-check') checkFolder(true);
+    else if (act === 'pic-unwatch') unwatchFolder();
     else if (act === 'pic-stop') { if (S.upload) { S.upload.stop = true; S.upload.status = 'Stopping after the current photos…'; var pe = document.querySelector('.pic-upload .progress'); if (pe) pe.textContent = S.upload.status; } }
     else if (act === 'save-password') changePassword();
     else if (act === 'edit-quote') { if (S.quote) openSheet({ type: 'editquote' }); }
