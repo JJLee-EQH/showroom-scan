@@ -183,10 +183,18 @@ button { cursor: pointer; }
 .pick { display: block; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line); padding: 14px 0; }
 .pick b { display: block; font-size: 18px; font-weight: 600; }
 /* item pictures: a small picture beside a number, a larger one on the item itself */
-.pick.has-pic { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; align-items: center; }
-.pick.has-pic .pick-text { min-width: 0; }
+.pick.with-pic { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; align-items: center; }
+.pick.with-pic .pick-text { min-width: 0; }
 .pic { width: 52px; height: 52px; border-radius: 8px; background: var(--page) center / contain no-repeat; flex: none; }
-.pic.is-empty { display: none; }
+/* while a picture is on its way: a quiet grey box */
+.pic.is-loading { background: var(--line); opacity: .55; animation: picwait 1.2s ease-in-out infinite alternate; }
+@keyframes picwait { from { opacity: .35; } to { opacity: .7; } }
+@media (prefers-reduced-motion: reduce) { .pic.is-loading { animation: none; } }
+/* no picture for this item: say so, so nobody waits for one */
+.pic.is-none { display: flex; align-items: center; justify-content: center; text-align: center; background: none; border: 1px dashed var(--line);
+  color: var(--muted); font-size: 10px; line-height: 1.15; padding: 2px; box-sizing: border-box; }
+.item-head .pic.is-none { font-size: 13px; gap: 4px; flex-direction: column; }
+.item-head .pic.is-none svg { width: 26px; height: 26px; opacity: .7; }
 .alike .pic { width: 44px; height: 44px; }
 .item-head { display: grid; grid-template-columns: 1fr auto; column-gap: 14px; align-items: start; }
 .item-head .pic { width: 120px; height: 120px; border-radius: 12px; background-color: #fff; border: 1px solid var(--line); }
@@ -1489,25 +1497,39 @@ var Recap = (function () {
      A place for a picture is <span class="pic" data-pic="ITEM">; it is filled when the picture arrives and hidden
      when the item has none. */
   var picsWaiting = {};
-  function picSpan(item) { return '<span class="pic is-empty" data-pic="' + esc(item) + '"></span>'; }
+  var picsFailed = {};
+  var NO_PIC_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M21 16l-5-5-8 8"/><path d="M3 3l18 18"/></svg>';
+  function picSpan(item) { return '<span class="pic is-loading" data-pic="' + esc(item) + '"></span>'; }
+  /* three looks: the picture, a grey box while it is on its way, or "No picture" when the item has none */
   function paintPics() {
     Array.prototype.forEach.call(document.querySelectorAll('[data-pic]'), function (el) {
-      var v = S.pics[String(el.getAttribute('data-pic')).toUpperCase()];
-      if (v) { el.style.backgroundImage = 'url("' + v + '")'; el.classList.remove('is-empty'); }
-      else el.classList.add('is-empty');
-      var row = el.closest('.pick'); if (row) row.classList.toggle('has-pic', !!v);
+      var k = String(el.getAttribute('data-pic')).toUpperCase(), v = S.pics[k], big = !!el.closest('.item-head');
+      var state = v ? 'pic' : v === '' ? 'none' : picsFailed[k] ? 'failed' : 'loading';
+      if (el.getAttribute('data-state') !== state) {
+        el.setAttribute('data-state', state);
+        el.classList.toggle('is-loading', state === 'loading');
+        el.classList.toggle('is-none', state === 'none' || state === 'failed');
+        el.style.backgroundImage = v ? 'url("' + v + '")' : '';
+        el.innerHTML = state === 'none' ? (big ? NO_PIC_ICON + '<span>No picture yet</span>' : 'No picture')
+                     : state === 'failed' ? (big ? NO_PIC_ICON + '<span>Picture not loaded</span>' : 'Not loaded') : '';
+        el.title = state === 'none' ? 'There is no picture for this item yet' : state === 'failed' ? 'The picture could not be loaded' : '';
+      }
+      var row = el.closest('.pick'); if (row) { row.classList.add('with-pic'); row.classList.toggle('has-pic', !!v); }
     });
   }
   function wantPics(items) {
     var need = [];
-    items.forEach(function (i) { var k = String(i).toUpperCase(); if (S.pics[k] === undefined && !picsWaiting[k] && need.indexOf(i) < 0) need.push(i); });
+    items.forEach(function (i) { var k = String(i).toUpperCase(); if (S.pics[k] === undefined && !picsWaiting[k] && need.indexOf(i) < 0) { delete picsFailed[k]; need.push(i); } });
     paintPics();
     for (var n = 0; n < need.length; n += 12) (function (part) {
       part.forEach(function (i) { picsWaiting[String(i).toUpperCase()] = true; });
       api('pics', { items: part }).then(function (j) {
-        part.forEach(function (i) { var k = String(i).toUpperCase(), d = (j.pictures || {})[i]; S.pics[k] = d ? 'data:image/jpeg;base64,' + d : ''; delete picsWaiting[k]; });
+        part.forEach(function (i) { var k = String(i).toUpperCase(), d = (j.pictures || {})[i]; S.pics[k] = d ? 'data:image/jpeg;base64,' + d : ''; delete picsWaiting[k]; delete picsFailed[k]; });
         paintPics();
-      }).catch(function () { part.forEach(function (i) { delete picsWaiting[String(i).toUpperCase()]; }); });     /* no picture is not worth an error */
+      }).catch(function () {
+        part.forEach(function (i) { var k = String(i).toUpperCase(); delete picsWaiting[k]; picsFailed[k] = true; });     /* shown as "not loaded"; tried again next time */
+        paintPics();
+      });
     })(need.slice(n, n + 12));
   }
   function picsOnScreen() {
