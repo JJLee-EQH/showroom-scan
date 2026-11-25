@@ -6,7 +6,7 @@
      Paste the web app URL from Apps Script between the quotes (it ends in /exec).
      ==================================================================================== -->
 <script>
-var API_URL = 'https://script.google.com/macros/s/AKfycbyqT9QkViKXbRTAsGWzVIvNJu_0detRnGhO2kXgXmmjaPz0kW64l2SGTF0Pr_PhN4H67Q/exec';
+var API_URL = 'https://script.google.com/macros/s/AKfycbxZHp6NVe09ldjQ6pTNQ6qHmIMi496VDePp7JZhj0Vot0hlTWc1Ig4ScSfySQmoB4WPcw/exec';
 var REFRESH_MS = 20000;   /* how often an open phone re-reads the lines, in milliseconds */
 </script>
 <meta charset="utf-8">
@@ -1206,6 +1206,7 @@ var Recap = (function () {
   }
   function runPictures(entries, quiet) {
     if (S.upload && S.upload.running) return Promise.resolve();
+    clearTimeout(S.picResume);
     var listed = S.upload && S.upload.listing ? S.upload : null;          /* the folder listing that led to this run */
     var found = listed ? listed.found : entries.length, watch = !!listed;
     var u = S.upload = { running: true, stop: false, quiet: !!quiet, watch: watch, found: found, started: Date.now(), total: 0, done: 0, saved: 0, same: 0, doubles: 0, unmatched: [], failed: [], uploaded: [], status: 'Checking what is already uploaded…' };
@@ -1237,25 +1238,61 @@ var Recap = (function () {
       if (S.sheet && S.sheet.type === 'pictures') openSheet(S.sheet);
       picProgress();
     }
-    return api('pic_have').then(function (j) {
+    /* A request that fails (a dropped connection, Google busy for a moment) is tried again after 5, 15, 30, 60 and 120
+       seconds, and a large batch is split in two first, since smaller requests get through more easily. */
+    var WAITS = window.__picWaits || [5, 15, 30, 60, 120], maxBatch = 60;          /* tests may shorten the pauses */
+    function pause(sec, what, attempt) {
+      return new Promise(function (resolve) {
+        var left = sec;
+        (function tick() {
+          if (u.stop || left <= 0) { resolve(); return; }
+          u.status = 'Connection problem while ' + what + '. Trying again in ' + left + ' s (attempt ' + (attempt + 2) + ' of ' + (WAITS.length + 1) + ')…';
+          picProgress(); left--; setTimeout(tick, 1000);
+        })();
+      });
+    }
+    function retryable(e) { return !(e && (e.error === 'signed_out' || e.error === 'not_admin' || e.error === 'bad_request')); }
+    function withRetry(call, what, attempt) {
+      attempt = attempt || 0;
+      return call().catch(function (e) {
+        if (!retryable(e) || attempt >= WAITS.length || u.stop) throw e;
+        return pause(WAITS[attempt], what, attempt).then(function () { if (u.stop) throw e; return withRetry(call, what, attempt + 1); });
+      });
+    }
+    return withRetry(function () { return api('pic_have', {}, 60000); }, 'checking what is uploaded').then(function (j) {
       var have = {}, i = 0, batch = [], size = 0, lastShow = 0;
       Object.keys(j.have || {}).forEach(function (k) { have[k.toUpperCase()] = j.have[k]; });
       u.inApp = Object.keys(have).length;
       function send() {
         if (!batch.length) return Promise.resolve();
         var part = batch; batch = []; size = 0;
-        return api('pic_put', { pictures: part }, 180000).then(function (r) {
-          u.saved += r.saved || 0; u.same += r.same || 0;
+        return sendPart(part, 0);
+      }
+      function sendPart(part, attempt) {
+        return api('pic_put', { pictures: part }, 120000).then(function (r) { took(part, r); }, function (e) {
+          if (!retryable(e) || attempt >= WAITS.length || u.stop) throw e;
+          if (part.length > 10) {                                         /* split in two, and keep later batches smaller */
+            var half = Math.ceil(part.length / 2); maxBatch = Math.max(10, half);
+            return pause(WAITS[attempt], 'uploading', attempt).then(function () { return sendPart(part.slice(0, half), attempt + 1); })
+              .then(function () { return sendPart(part.slice(half), attempt + 1); });
+          }
+          return pause(WAITS[attempt], 'uploading', attempt).then(function () { return sendPart(part, attempt + 1); });
+        });
+      }
+      /* counted from what was sent, so that a batch sent again after a dropped connection is not counted twice */
+      function took(part, r) {
+        {
           var refused = (r.unknown || []).concat(r.bad || []).map(function (x) { return String(x).toUpperCase(); });
           part.forEach(function (x) {
-            if (!x.data || refused.indexOf(x.item.toUpperCase()) >= 0) return;
-            u.uploaded.push(x.item);
+            if (refused.indexOf(x.item.toUpperCase()) >= 0) return;
+            if (!x.data) { u.same++; return; }
+            u.saved++; u.uploaded.push(x.item);
             if (!have[x.item.toUpperCase()]) { have[x.item.toUpperCase()] = [x.hash, x.stamp]; u.inApp++; }
           });
           (r.unknown || []).forEach(function (x) { u.unmatched.push(x); });
           (r.bad || []).forEach(function (x) { u.failed.push(x + ' (refused by the Sheet)'); });
           show();
-        });
+        }
       }
       function next() {
         /* unchanged photos are passed over in a plain loop: nothing is read, so thousands take a moment */
@@ -1274,7 +1311,7 @@ var Recap = (function () {
           if (old && old[0] === sha) { batch.push({ item: it.item, hash: sha, stamp: stamp }); return; }       /* same photo, only its date moved */
           return shrinkPicture(en.file).then(function (b64) { batch.push({ item: it.item, hash: sha, stamp: stamp, data: b64 }); size += b64.length; });
         }).then(function () {
-          if (batch.length >= 60 || size > 1800000) return send();
+          if (batch.length >= maxBatch || size > 1800000) return send();
           if (Date.now() - lastShow > 200) { lastShow = Date.now(); show(); }
         }, function () { if (!counted) u.done++; u.failed.push(en.path + ' (could not be read as a picture)'); }).then(next);
       }
@@ -1282,7 +1319,15 @@ var Recap = (function () {
       return next();
     }).catch(function (e) {
       if (e && e.error === 'signed_out') { u.running = false; S.saving = false; showGate(problemText(e)); return; }
-      finish('The upload stopped: ' + (e && e.error === 'network' ? 'no connection to the storage.' : problemText(e)) + ' What was uploaded is kept; the next check continues from there.');
+      /* still failing after about four minutes of trying: stop for now and continue by itself in 10 minutes */
+      var later = window.__picResumeMs || 10 * 60000, at = Date.now() + later;
+      finish('The upload stopped: ' + (e && e.error === 'network' ? 'no connection to the storage' : problemText(e)) + '. What was uploaded is kept, and it continues by itself at ' +
+             new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' while the app stays open here (or choose Check now).');
+      clearTimeout(S.picResume);
+      S.picResume = setTimeout(function () {
+        if (S.upload && S.upload.running) return;
+        if (u.watch) checkFolder(false); else runPictures(entries, true);     /* photos already uploaded are skipped without being read */
+      }, later);
     });
   }
   function startPictureUpload(fileList) {
